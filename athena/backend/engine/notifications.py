@@ -1,5 +1,5 @@
 """
-ATHENA AI — Push Notifications (Expo Push API)
+ATHENA AI — Push Notifications (Expo Push API + Discord Webhook)
 """
 import httpx
 import logging
@@ -10,7 +10,38 @@ from models.database import AsyncSessionLocal, User
 
 logger = logging.getLogger(__name__)
 
-EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+EXPO_PUSH_URL    = "https://exp.host/--/api/v2/push/send"
+DISCORD_WEBHOOK  = "https://discord.com/api/webhooks/1490683766811660401/Zc1nEtFY2gv_-6nxssIqhX5jkw6ao3O5qC1lZecRRRT4q8e8w17QqLL1GWxYPwxA5p1C"
+
+
+async def send_discord_alert(trades: List[Dict]):
+    """Send a Discord message for every Grade A trade found."""
+    grade_a = [t for t in trades if t.get("grade") == "A"]
+    if not grade_a:
+        return
+
+    lines = []
+    for t in grade_a:
+        dir_emoji  = "📈" if t["direction"] == "LONG" else "📉"
+        mtf        = " ✅ MTF" if t.get("mtf_confirmed") else ""
+        conf       = t.get("confluence_count", 0)
+        lines.append(
+            f"{dir_emoji} **{t['symbol']}** {t['direction']}{mtf}\n"
+            f"> Score: **{t['score_total']:.0f}/100** | R:R **{t['risk_reward']:.1f}** | "
+            f"⚡ {conf} confluences | Entry: `{t['entry']}`"
+        )
+
+    content = "🏆 **ATHENA AI — Grade A Setup(s) détecté(s)**\n\n" + "\n\n".join(lines)
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(DISCORD_WEBHOOK, json={"content": content})
+            if resp.status_code not in (200, 204):
+                logger.warning(f"Discord webhook failed: {resp.status_code} {resp.text}")
+            else:
+                logger.info(f"Discord alert sent for {len(grade_a)} Grade A trade(s)")
+    except Exception as e:
+        logger.error(f"Discord webhook error: {e}")
 
 
 async def send_expo_notification(token: str, title: str, body: str, data: Dict = None):

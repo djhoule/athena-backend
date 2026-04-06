@@ -23,7 +23,7 @@ from engine.technical import calculate_technicals
 from engine.fundamental import fetch_forex_factory_events, get_fundamental_signals
 from engine.scorer import calculate_score
 from models.database import AsyncSessionLocal, Trade, MarketType, TradeDirection, TradeGrade
-from engine.notifications import send_trade_alerts
+from engine.notifications import send_trade_alerts, send_discord_alert
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +264,7 @@ async def run_scan():
             )
 
         await send_trade_alerts(top_trades)
+        await send_discord_alert(top_trades)
 
     except Exception as e:
         logger.error(f"run_scan error: {e}", exc_info=True)
