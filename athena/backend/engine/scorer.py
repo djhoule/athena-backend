@@ -558,7 +558,7 @@ def calculate_score(
     fundamental: Dict[str, Any],
     min_score: int = 72,
     min_rr: float = 2.0,
-    min_confluence: int = 3,
+    min_confluence: int = 4,
     symbol: str = "",
 ) -> Optional[Dict[str, Any]]:
     """

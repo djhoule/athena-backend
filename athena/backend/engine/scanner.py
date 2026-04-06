@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 WATCHLIST = (
     [(sym, "FOREX")     for sym in settings.FOREX_PAIRS] +
     [(sym, "INDICES")   for sym in settings.INDICES] +
-    [(sym, "CRYPTO")    for sym in settings.CRYPTO_PAIRS] +
+    # CRYPTO désactivé — 0% win rate sur données 4H non fiables
+    # [(sym, "CRYPTO")    for sym in settings.CRYPTO_PAIRS] +
     [(sym, "COMMODITY") for sym in settings.COMMODITIES]
 )
 
@@ -211,9 +212,20 @@ async def run_scan():
 
         # Save to database
         async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+
+            # Load existing PENDING trades to avoid duplicates (same symbol+direction)
+            existing = await session.execute(
+                select(Trade.symbol, Trade.direction).where(Trade.outcome == "PENDING")
+            )
+            pending_keys = {(row.symbol, row.direction.value) for row in existing}
 
             new_trades = []
             for t in top_trades:
+                key = (t["symbol"], t["direction"])
+                if key in pending_keys:
+                    logger.debug(f"Skipping duplicate PENDING: {t['symbol']} {t['direction']}")
+                    continue
                 trade = Trade(
                     symbol=t["symbol"],
                     market_type=MarketType(t["market_type"]),
