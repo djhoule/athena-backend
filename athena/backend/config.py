@@ -35,49 +35,28 @@ class Settings(BaseSettings):
     # ── Watchlist ─────────────────────────────────────────────────────────────
 
     FOREX_PAIRS: List[str] = [
-        # Majeurs — core
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-        "AUDUSD", "NZDUSD", "USDCAD",
-        # Croisées — diversification
-        "EURJPY", "GBPJPY", "EURGBP",
-        "AUDJPY", "CADJPY", "EURAUD",
-        "GBPAUD", "AUDCAD", "NZDJPY",
+        "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCAD", "USDCHF",
+        "EURAUD", "EURNZD", "EURCAD", "EURCHF", "EURJPY", "EURGBP",
+        "GBPAUD", "GBPNZD", "GBPCAD", "GBPJPY", "GBPCHF",
+        "AUDNZD", "AUDCAD", "AUDJPY", "AUDCHF",
+        "NZDJPY", "NZDCAD", "NZDCHF",
+        "CADCHF", "CADJPY", "CHFJPY",
+        "USDMXN",
     ]
 
     INDICES: List[str] = [
-        # Core US — via ETF Yahoo Finance
-        "SPY",      # S&P 500
-        "QQQ",      # NASDAQ 100
-        "DIA",      # Dow Jones US30
-        "IWM",      # Russell 2000 (US2000)
-        # International
-        "EWJ",      # Japan JP225
-        "EWG",      # Germany DAX
-        "EWU",      # UK FTSE
-        "EWZ",      # Brazil
-        "EEM",      # Emerging Markets
+        "SP500", "NAS100", "US30", "US2000",
+        "JP225", "CN50", "HK33", "IX00",
+        "AEX", "EU50", "IBEX35", "DAX", "AU200",
     ]
 
     CRYPTO_PAIRS: List[str] = [
-        # Core
-        "BTC/USDT",
-        "ETH/USDT",
-        # Diversification
-        "XRP/USDT",
-        "SOL/USDT",
-        "BNB/USDT",
+        "BTCUSD", "ETHUSD", "XRPUSD", "XMRUSD", "AVAXUSD", "SOLUSD",
     ]
 
     COMMODITIES: List[str] = [
-        # Core
-        "GC=F",     # Gold (XAUUSD)
-        "SI=F",     # Silver (XAGUSD)
-        "CL=F",     # Crude Oil WTI (USOIL)
-        # Diversification
-        "BZ=F",     # Brent Oil (UKOIL)
-        "NG=F",     # Natural Gas
-        "PL=F",     # Platinum
-        "HG=F",     # Copper
+        "GOLD", "SILVER", "PLATINUM", "COPPER", "PALADIUM",
+        "USOIL", "UKOIL", "CORN", "SOYBEAN", "WHEAT", "SUGAR",
     ]
 
     class Config:

@@ -14,6 +14,46 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISPLAY NAME → YAHOO FINANCE TICKER MAP
+# ─────────────────────────────────────────────────────────────────────────────
+
+DISPLAY_TICKER_MAP = {
+    # Indices
+    "SP500":   "^GSPC",
+    "NAS100":  "^NDX",
+    "US30":    "^DJI",
+    "US2000":  "^RUT",
+    "JP225":   "^N225",
+    "CN50":    "FXI",
+    "HK33":    "^HSI",
+    "IX00":    "^FCHI",      # CAC40
+    "AEX":     "^AEX",
+    "EU50":    "^STOXX50E",
+    "IBEX35":  "^IBEX",
+    "DAX":     "^GDAXI",
+    "AU200":   "^AXJO",
+    # Commodities
+    "GOLD":    "GC=F",
+    "SILVER":  "SI=F",
+    "PLATINUM":"PL=F",
+    "COPPER":  "HG=F",
+    "PALADIUM":"PA=F",
+    "USOIL":   "CL=F",
+    "UKOIL":   "BZ=F",
+    "CORN":    "ZC=F",
+    "SOYBEAN": "ZS=F",
+    "WHEAT":   "ZW=F",
+    "SUGAR":   "SB=F",
+    # Crypto
+    "BTCUSD":  "BTC-USD",
+    "ETHUSD":  "ETH-USD",
+    "XRPUSD":  "XRP-USD",
+    "XMRUSD":  "XMR-USD",
+    "AVAXUSD": "AVAX-USD",
+    "SOLUSD":  "SOL-USD",
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOREX — Frankfurter.app
@@ -192,12 +232,16 @@ async def fetch_yfinance_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def fetch_ohlcv(symbol: str, market_type: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Universal OHLCV fetcher."""
+    """Universal OHLCV fetcher. Resolves display names to actual tickers."""
     market_type = market_type.upper()
 
-    if market_type == "CRYPTO":
-        return await fetch_crypto_ohlcv(symbol, timeframe, limit)
-    elif market_type == "FOREX":
+    if market_type == "FOREX":
         return await fetch_forex_ohlcv(symbol, timeframe, limit)
+
+    # Resolve display name → Yahoo Finance ticker
+    ticker = DISPLAY_TICKER_MAP.get(symbol, symbol)
+
+    if market_type == "CRYPTO":
+        return await fetch_yfinance_ohlcv(ticker, timeframe, limit)
     else:
-        return await fetch_yfinance_ohlcv(symbol, timeframe, limit)
+        return await fetch_yfinance_ohlcv(ticker, timeframe, limit)

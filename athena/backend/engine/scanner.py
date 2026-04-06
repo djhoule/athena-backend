@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 WATCHLIST = (
     [(sym, "FOREX")     for sym in settings.FOREX_PAIRS] +
     [(sym, "INDICES")   for sym in settings.INDICES] +
-    # CRYPTO désactivé — 0% win rate sur données 4H non fiables
-    # [(sym, "CRYPTO")    for sym in settings.CRYPTO_PAIRS] +
+    [(sym, "CRYPTO")    for sym in settings.CRYPTO_PAIRS] +   # 1D only (like FOREX)
     [(sym, "COMMODITY") for sym in settings.COMMODITIES]
 )
 
@@ -85,8 +84,8 @@ async def scan_symbol_mtf(
         # ── 1D scan ───────────────────────────────────────────────────────────
         result_1d = await _scan_tf(symbol, market_type, "1d", fundamental)
 
-        # ── FOREX → 1D only ───────────────────────────────────────────────────
-        if market_type == "FOREX":
+        # ── FOREX + CRYPTO → 1D only ──────────────────────────────────────────
+        if market_type in ("FOREX", "CRYPTO"):
             if result_1d is None:
                 return None
             return {
