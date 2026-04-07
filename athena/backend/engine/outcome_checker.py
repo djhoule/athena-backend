@@ -109,7 +109,8 @@ async def check_outcomes():
                 df_since = df[df.index > trade.created_at.replace(tzinfo=None)]
                 if df_since.empty:
                     # If trade just created and no new candle yet, skip
-                    if trade.expires_at and now > trade.expires_at:
+                    expires_at = trade.expires_at.replace(tzinfo=timezone.utc) if trade.expires_at and trade.expires_at.tzinfo is None else trade.expires_at
+                    if expires_at and now > expires_at:
                         # Expired with no data → EXPIRED
                         await _update_outcome(trade.id, "EXPIRED", 0.0, trade.entry_price)
                         resolved += 1
@@ -121,11 +122,13 @@ async def check_outcomes():
                     await _update_outcome(trade.id, outcome, pnl_r, outcome_price)
                     resolved += 1
                     logger.info(f"  {trade.symbol} {trade.direction.value}: {outcome} ({pnl_r:+.1f}R)")
-                elif trade.expires_at and now > trade.expires_at + timedelta(hours=4):
-                    # Grace period: wait 4h after expiry before marking EXPIRED
-                    await _update_outcome(trade.id, "EXPIRED", 0.0, trade.entry_price)
-                    resolved += 1
-                    logger.info(f"  {trade.symbol}: EXPIRED (no level hit)")
+                else:
+                    expires_at = trade.expires_at.replace(tzinfo=timezone.utc) if trade.expires_at and trade.expires_at.tzinfo is None else trade.expires_at
+                    if expires_at and now > expires_at + timedelta(hours=4):
+                        # Grace period: wait 4h after expiry before marking EXPIRED
+                        await _update_outcome(trade.id, "EXPIRED", 0.0, trade.entry_price)
+                        resolved += 1
+                        logger.info(f"  {trade.symbol}: EXPIRED (no level hit)")
 
             except Exception as e:
                 logger.error(f"Outcome check error for trade {trade.id} ({trade.symbol}): {e}")
