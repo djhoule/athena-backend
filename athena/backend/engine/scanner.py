@@ -58,6 +58,7 @@ async def _scan_tf(
         technical, fundamental,
         min_score=settings.MIN_SCORE_THRESHOLD,
         min_rr=settings.MIN_RISK_REWARD,
+        min_confluence=settings.MIN_CONFLUENCE,
         symbol=symbol,
     )
 
