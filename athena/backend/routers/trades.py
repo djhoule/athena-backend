@@ -167,6 +167,15 @@ async def record_trade_action(
     return {"trade_id": trade_id, "action": action, "status": "ok"}
 
 
+@router.delete("/reset", response_model=dict)
+async def reset_all_trades(db: AsyncSession = Depends(get_db)):
+    """Deletes ALL trades from the database. Use for testing/reset only."""
+    from sqlalchemy import delete
+    await db.execute(delete(Trade))
+    await db.commit()
+    return {"status": "ok", "message": "All trades deleted."}
+
+
 @router.get("/{trade_id}", response_model=dict)
 async def get_trade(trade_id: int, db: AsyncSession = Depends(get_db)):
     """Returns full detail of a single trade."""
