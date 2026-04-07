@@ -172,54 +172,40 @@ async def fetch_crypto_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 20
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def fetch_yfinance_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Fetch OHLCV from Yahoo Finance via direct requests."""
+    """Fetch OHLCV from Yahoo Finance via yfinance library."""
     try:
+        import yfinance as yf
+
         interval_map = {"1h": "1h", "4h": "1h", "1d": "1d", "1w": "1wk"}
-        range_map    = {"1h": "60d", "4h": "60d", "1d": "1y", "1w": "5y"}
+        period_map   = {"1h": "60d", "4h": "60d", "1d": "1y",  "1w": "5y"}
 
         yf_interval = interval_map.get(timeframe, "1d")
-        yf_range    = range_map.get(timeframe, "1y")
-
-        url     = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        params  = {"interval": yf_interval, "range": yf_range}
+        yf_period   = period_map.get(timeframe, "1y")
 
         def _fetch():
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-            return resp.json()
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=True)
+            return df
 
-        data = await asyncio.to_thread(_fetch)
+        df = await asyncio.to_thread(_fetch)
 
-        result = data.get("chart", {}).get("result")
-        if not result:
-            logger.warning(f"Yahoo Finance no data for {symbol}")
+        if df is None or df.empty:
+            logger.warning(f"yfinance no data for {symbol}")
             return None
 
-        result     = result[0]
-        timestamps = result.get("timestamp", [])
-        indicators = result.get("indicators", {}).get("quote", [{}])[0]
-
-        if not timestamps:
-            return None
-
-        df = pd.DataFrame({
-            "timestamp": pd.to_datetime(timestamps, unit="s"),
-            "open":   indicators.get("open",   [None] * len(timestamps)),
-            "high":   indicators.get("high",   [None] * len(timestamps)),
-            "low":    indicators.get("low",    [None] * len(timestamps)),
-            "close":  indicators.get("close",  [None] * len(timestamps)),
-            "volume": indicators.get("volume", [0]    * len(timestamps)),
-        })
-        df.set_index("timestamp", inplace=True)
+        # Normalize column names to lowercase
+        df.columns = [c.lower() for c in df.columns]
+        df = df[["open", "high", "low", "close", "volume"]].copy()
+        df.index.name = "timestamp"
         df.dropna(inplace=True)
 
-        if timeframe == "4h" and yf_interval == "1h":
+        if timeframe == "4h":
             df = df.resample("4h").agg({
                 "open": "first", "high": "max",
                 "low": "min", "close": "last", "volume": "sum"
             }).dropna()
 
-        logger.info(f"Yahoo Finance OK for {symbol}: {len(df)} candles")
+        logger.info(f"yfinance OK for {symbol}: {len(df)} candles")
         return df.tail(limit).astype(float)
 
     except Exception as e:
