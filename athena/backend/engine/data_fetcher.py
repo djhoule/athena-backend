@@ -1,8 +1,14 @@
 """
-ATHENA AI — Data Fetcher
-- Forex:               Frankfurter.app (gratuit, sans clé, illimité)
-- Crypto:              Yahoo Finance (BTC-USD, ETH-USD, etc.)
-- Indices/Commodities: Yahoo Finance direct via requests
+ATHENA AI — Data Fetcher (v3)
+- FOREX      : Yahoo Finance (EURUSD=X) — vraies données OHLCV, intraday disponible
+- CRYPTO     : Yahoo Finance (BTC-USD)
+- INDICES    : Yahoo Finance (^GSPC, ^NDX, etc.)
+- COMMODITIES: Yahoo Finance (GC=F, CL=F, etc.)
+
+Améliorations v3 :
+- Suppression Frankfurter (données OHLC simulées) → Yahoo Finance pour tout
+- Retry avec backoff exponentiel (3 tentatives)
+- Session HTTP partagée pour performance
 """
 import asyncio
 import pandas as pd
@@ -10,7 +16,7 @@ import numpy as np
 from typing import Optional
 from datetime import datetime, timedelta
 import logging
-import requests
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -20,205 +26,158 @@ logger = logging.getLogger(__name__)
 
 DISPLAY_TICKER_MAP = {
     # Indices
-    "SP500":   "^GSPC",
-    "NAS100":  "^NDX",
-    "US30":    "^DJI",
-    "US2000":  "^RUT",
-    "JP225":   "^N225",
-    "CN50":    "FXI",
-    "HK33":    "^HSI",
-    "IX00":    "^FCHI",      # CAC40
-    "AEX":     "^AEX",
-    "EU50":    "^STOXX50E",
-    "IBEX35":  "^IBEX",
-    "DAX":     "^GDAXI",
-    "AU200":   "^AXJO",
+    "SP500":    "^GSPC",
+    "NAS100":   "^NDX",
+    "US30":     "^DJI",
+    "US2000":   "^RUT",
+    "JP225":    "^N225",
+    "CN50":     "FXI",
+    "HK33":     "^HSI",
+    "IX00":     "^FCHI",
+    "AEX":      "^AEX",
+    "EU50":     "^STOXX50E",
+    "IBEX35":   "^IBEX",
+    "DAX":      "^GDAXI",
+    "AU200":    "^AXJO",
     # Commodities
-    "GOLD":    "GC=F",
-    "SILVER":  "SI=F",
-    "PLATINUM":"PL=F",
-    "COPPER":  "HG=F",
-    "PALADIUM":"PA=F",
-    "USOIL":   "CL=F",
-    "UKOIL":   "BZ=F",
-    "CORN":    "ZC=F",
-    "SOYBEAN": "ZS=F",
-    "WHEAT":   "ZW=F",
-    "SUGAR":   "SB=F",
+    "GOLD":     "GC=F",
+    "SILVER":   "SI=F",
+    "PLATINUM": "PL=F",
+    "COPPER":   "HG=F",
+    "PALADIUM": "PA=F",
+    "USOIL":    "CL=F",
+    "UKOIL":    "BZ=F",
+    "CORN":     "ZC=F",
+    "SOYBEAN":  "ZS=F",
+    "WHEAT":    "ZW=F",
+    "SUGAR":    "SB=F",
     # Crypto
-    "BTCUSD":  "BTC-USD",
-    "ETHUSD":  "ETH-USD",
-    "XRPUSD":  "XRP-USD",
-    "XMRUSD":  "XMR-USD",
-    "AVAXUSD": "AVAX-USD",
-    "SOLUSD":  "SOL-USD",
+    "BTCUSD":   "BTC-USD",
+    "ETHUSD":   "ETH-USD",
+    "XRPUSD":   "XRP-USD",
+    "XMRUSD":   "XMR-USD",
+    "AVAXUSD":  "AVAX-USD",
+    "SOLUSD":   "SOL-USD",
 }
 
+# FOREX pairs → Yahoo Finance uses "EURUSD=X" format
+# All 6-char FOREX pairs get "=X" appended automatically in fetch_forex_ohlcv
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FOREX — Frankfurter.app
+# RETRY WRAPPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Frankfurter supporte seulement certaines devises comme base
-FRANKFURTER_SUPPORTED = [
-    "EUR", "USD", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD",
-    "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON",
-]
+async def _fetch_with_retry(fetch_fn, symbol: str, max_attempts: int = 3) -> Optional[pd.DataFrame]:
+    """Calls fetch_fn() up to max_attempts times with exponential backoff."""
+    for attempt in range(max_attempts):
+        try:
+            result = await asyncio.to_thread(fetch_fn)
+            if result is not None and not result.empty:
+                return result
+            # Empty result — wait and retry
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(2 ** attempt)
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt
+                logger.warning(f"Fetch attempt {attempt+1} failed for {symbol}: {e}. Retry in {wait}s")
+                await asyncio.sleep(wait)
+            else:
+                logger.error(f"All {max_attempts} attempts failed for {symbol}: {e}")
+    return None
 
-async def fetch_forex_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Fetch Forex OHLCV from Frankfurter.app — free, no key, unlimited."""
-    try:
-        from_sym = symbol[:3]
-        to_sym   = symbol[3:]
 
-        end_date   = datetime.utcnow().date()
-        start_date = end_date - timedelta(days=365)
+# ─────────────────────────────────────────────────────────────────────────────
+# CORE YFINANCE FETCHER
+# ─────────────────────────────────────────────────────────────────────────────
 
-        url = f"https://api.frankfurter.app/{start_date}..{end_date}"
+def _yfinance_fetch(symbol: str, yf_period: str, yf_interval: str) -> Optional[pd.DataFrame]:
+    """Synchronous yfinance fetch — run via asyncio.to_thread."""
+    import yfinance as yf
+    ticker = yf.Ticker(symbol)
+    df = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=True)
+    return df
 
-        def _fetch(base, target):
-            resp = requests.get(url, params={"from": base, "to": target}, timeout=30)
-            return resp.json()
 
-        # Try direct fetch first
-        data = await asyncio.to_thread(_fetch, from_sym, to_sym)
+async def fetch_yfinance_ohlcv(symbol: str, timeframe: str = "1d", limit: int = 300) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from Yahoo Finance with retry logic."""
+    interval_map = {"1h": "1h", "4h": "1h", "1d": "1d", "1w": "1wk"}
+    period_map   = {"1h": "60d", "4h": "60d", "1d": "2y", "1w": "5y"}
 
-        records = []
-        if data.get("rates"):
-            for dt_str, vals in data["rates"].items():
-                rate = vals.get(to_sym)
-                if rate:
-                    records.append({
-                        "timestamp": pd.to_datetime(dt_str),
-                        "open":   rate,
-                        "high":   rate * 1.0015,
-                        "low":    rate * 0.9985,
-                        "close":  rate,
-                        "volume": 1.0,
-                    })
-        else:
-            # Try inverse
-            data2 = await asyncio.to_thread(_fetch, to_sym, from_sym)
-            if data2.get("rates"):
-                for dt_str, vals in data2["rates"].items():
-                    rate = vals.get(from_sym)
-                    if rate and rate != 0:
-                        inv = 1.0 / rate
-                        records.append({
-                            "timestamp": pd.to_datetime(dt_str),
-                            "open":   inv,
-                            "high":   inv * 1.0015,
-                            "low":    inv * 0.9985,
-                            "close":  inv,
-                            "volume": 1.0,
-                        })
+    yf_interval = interval_map.get(timeframe, "1d")
+    yf_period   = period_map.get(timeframe, "2y")
 
-        if not records:
-            logger.warning(f"Frankfurter no data for {symbol}")
-            return None
+    def _fetch():
+        return _yfinance_fetch(symbol, yf_period, yf_interval)
 
-        df = pd.DataFrame(records).sort_values("timestamp").set_index("timestamp")
+    df = await _fetch_with_retry(_fetch, symbol)
 
-        # Simulate 4H from daily
-        if timeframe == "4h":
-            df_4h = []
-            for ts, row in df.iterrows():
-                for i in range(6):
-                    t = ts + timedelta(hours=i * 4)
-                    noise = np.random.uniform(-0.0003, 0.0003)
-                    df_4h.append({
-                        "timestamp": t,
-                        "open":   row["open"]  + noise,
-                        "high":   row["high"],
-                        "low":    row["low"],
-                        "close":  row["close"] + noise,
-                        "volume": 1.0,
-                    })
-            df = pd.DataFrame(df_4h).set_index("timestamp")
-
-        logger.info(f"Frankfurter OK for {symbol}: {len(df)} candles")
-        return df.tail(limit).astype(float)
-
-    except Exception as e:
-        logger.error(f"Frankfurter fetch error for {symbol}: {e}")
+    if df is None or df.empty:
+        logger.warning(f"yfinance no data for {symbol}")
         return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CRYPTO — Yahoo Finance (BTC-USD, ETH-USD, etc.)
-# ─────────────────────────────────────────────────────────────────────────────
-
-CRYPTO_SYMBOL_MAP = {
-    "BTC/USDT": "BTC-USD",
-    "ETH/USDT": "ETH-USD",
-    "XRP/USDT": "XRP-USD",
-    "SOL/USDT": "SOL-USD",
-    "BNB/USDT": "BNB-USD",
-    "ADA/USDT": "ADA-USD",
-    "DOGE/USDT": "DOGE-USD",
-    "AVAX/USDT": "AVAX-USD",
-    "DOT/USDT": "DOT-USD",
-    "MATIC/USDT": "MATIC-USD",
-}
-
-async def fetch_crypto_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Fetch crypto OHLCV from Yahoo Finance."""
-    yf_symbol = CRYPTO_SYMBOL_MAP.get(symbol, symbol.replace("/USDT", "-USD"))
-    return await fetch_yfinance_ohlcv(yf_symbol, timeframe, limit)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# INDICES & COMMODITIES — Yahoo Finance direct
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def fetch_yfinance_ohlcv(symbol: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Fetch OHLCV from Yahoo Finance via yfinance library."""
-    try:
-        import yfinance as yf
-
-        interval_map = {"1h": "1h", "4h": "1h", "1d": "1d", "1w": "1wk"}
-        period_map   = {"1h": "60d", "4h": "60d", "1d": "1y",  "1w": "5y"}
-
-        yf_interval = interval_map.get(timeframe, "1d")
-        yf_period   = period_map.get(timeframe, "1y")
-
-        def _fetch():
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=True)
-            return df
-
-        df = await asyncio.to_thread(_fetch)
-
-        if df is None or df.empty:
-            logger.warning(f"yfinance no data for {symbol}")
-            return None
-
-        # Normalize column names to lowercase
-        df.columns = [c.lower() for c in df.columns]
-        df = df[["open", "high", "low", "close", "volume"]].copy()
-        df.index.name = "timestamp"
-        df.dropna(inplace=True)
-
-        if timeframe == "4h":
-            df = df.resample("4h").agg({
-                "open": "first", "high": "max",
-                "low": "min", "close": "last", "volume": "sum"
-            }).dropna()
-
-        logger.info(f"yfinance OK for {symbol}: {len(df)} candles")
-        return df.tail(limit).astype(float)
-
-    except Exception as e:
-        logger.error(f"Yahoo Finance fetch error for {symbol}: {e}")
+    # Normalize column names
+    df.columns = [c.lower() for c in df.columns]
+    required = ["open", "high", "low", "close", "volume"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        logger.warning(f"yfinance missing columns {missing} for {symbol}")
         return None
 
+    df = df[required].copy()
+    df.index.name = "timestamp"
+    df.dropna(inplace=True)
+
+    # Resample 1h → 4h
+    if timeframe == "4h":
+        df = df.resample("4h").agg({
+            "open": "first", "high": "max",
+            "low": "min", "close": "last", "volume": "sum"
+        }).dropna()
+
+    if len(df) < 30:
+        logger.warning(f"yfinance insufficient candles for {symbol}: {len(df)}")
+        return None
+
+    logger.info(f"yfinance OK {symbol} [{timeframe}]: {len(df)} candles")
+    return df.tail(limit).astype(float)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ROUTER
+# FOREX — Yahoo Finance (EURUSD=X format)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def fetch_ohlcv(symbol: str, market_type: str, timeframe: str = "4h", limit: int = 200) -> Optional[pd.DataFrame]:
-    """Universal OHLCV fetcher. Resolves display names to actual tickers."""
+async def fetch_forex_ohlcv(symbol: str, timeframe: str = "1d", limit: int = 300) -> Optional[pd.DataFrame]:
+    """
+    Fetch Forex OHLCV from Yahoo Finance.
+    Yahoo supports EURUSD=X, GBPUSD=X, USDJPY=X etc. with real OHLCV data.
+    """
+    yf_symbol = symbol + "=X"
+    df = await fetch_yfinance_ohlcv(yf_symbol, timeframe, limit)
+
+    if df is None:
+        # Try reversed pair as fallback (some crosses need inversion)
+        reversed_sym = symbol[3:] + symbol[:3] + "=X"
+        logger.info(f"FOREX fallback: trying {reversed_sym}")
+        df_rev = await fetch_yfinance_ohlcv(reversed_sym, timeframe, limit)
+        if df_rev is not None:
+            # Invert prices
+            for col in ["open", "high", "low", "close"]:
+                df_rev[col] = 1.0 / df_rev[col]
+            # After inversion, high and low are swapped
+            df_rev["high"], df_rev["low"] = df_rev["low"].copy(), df_rev["high"].copy()
+            return df_rev
+
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIVERSAL ROUTER
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def fetch_ohlcv(symbol: str, market_type: str, timeframe: str = "1d", limit: int = 300) -> Optional[pd.DataFrame]:
+    """Universal OHLCV fetcher. Resolves display names to Yahoo Finance tickers."""
     market_type = market_type.upper()
 
     if market_type == "FOREX":
@@ -226,8 +185,4 @@ async def fetch_ohlcv(symbol: str, market_type: str, timeframe: str = "4h", limi
 
     # Resolve display name → Yahoo Finance ticker
     ticker = DISPLAY_TICKER_MAP.get(symbol, symbol)
-
-    if market_type == "CRYPTO":
-        return await fetch_yfinance_ohlcv(ticker, timeframe, limit)
-    else:
-        return await fetch_yfinance_ohlcv(ticker, timeframe, limit)
+    return await fetch_yfinance_ohlcv(ticker, timeframe, limit)

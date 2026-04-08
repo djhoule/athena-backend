@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def score_rsi(rsi: Dict) -> Tuple[float, str, str]:
-    """Returns (score 0-12, direction bias, reason)"""
+    """Returns (score 0-14, direction bias, reason) — +2 bonus for divergence"""
     val = rsi["value"]
     score = 0.0
     bias = "neutral"
@@ -71,7 +71,46 @@ def score_rsi(rsi: Dict) -> Tuple[float, str, str]:
         bias = "long" if val < 50 else "short"
         reasons.append(f"RSI {val:.1f} — légèrement {'survendu' if val < 50 else 'suracheté'}")
 
+    # Divergence bonus (+2 pts) — one of the most reliable reversal signals
+    if rsi.get("bullish_divergence") and bias != "short":
+        score = min(score + 2.0, 14.0)
+        bias = "long"
+        reasons.append("Divergence RSI haussière détectée — retournement probable")
+    elif rsi.get("bearish_divergence") and bias != "long":
+        score = min(score + 2.0, 14.0)
+        bias = "short"
+        reasons.append("Divergence RSI baissière détectée — retournement probable")
+
     return score, bias, " | ".join(reasons)
+
+
+def score_candle_patterns(candles: Dict) -> Tuple[float, str, str]:
+    """
+    Returns (score 0-12, direction bias, reason).
+    Candlestick patterns are direct price action signals — very high weight.
+    """
+    if not candles or not candles.get("patterns"):
+        return 2.0, "neutral", "Pas de pattern de bougie significatif"
+
+    patterns = candles["patterns"]
+    bias_str = candles.get("bias", "neutral")
+    b_votes  = candles.get("bullish_votes", 0)
+    s_votes  = candles.get("bearish_votes", 0)
+
+    bias = "long" if bias_str == "bullish" else ("short" if bias_str == "bearish" else "neutral")
+
+    # Score based on votes (max 6 votes = 12 pts)
+    votes = max(b_votes, s_votes)
+    score = min(votes * 2.0, 12.0)
+
+    # Minimum 4 pts if any pattern detected
+    score = max(score, 4.0) if patterns else 2.0
+
+    label = " + ".join(patterns[:2])
+    direction_label = "haussier" if bias == "long" else ("baissier" if bias == "short" else "neutre")
+    reason = f"Pattern bougie {direction_label}: {label}" if label else "Signal bougie neutre"
+
+    return score, bias, reason
 
 
 def score_macd(macd: Dict) -> Tuple[float, str, str]:
@@ -507,12 +546,14 @@ def build_trade_levels(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SIGNAL_LABELS = {
-    "rsi": "RSI",
-    "macd": "MACD",
-    "ema": "EMA Stack",
-    "sr": "Support/Résistance",
-    "trend": "Tendance",
-    "bollinger": "Bollinger",
+    "rsi":      "RSI",
+    "macd":     "MACD",
+    "ema":      "EMA Stack",
+    "sr":       "Support/Résistance",
+    "trend":    "Tendance",
+    "bollinger":"Bollinger",
+    "candles":  "Pattern Bougie",
+    "volume":   "Volume",
 }
 
 
@@ -573,35 +614,45 @@ def calculate_score(
     if not technical:
         return None
 
-    # ── Gate 0: veto absolu sur événement macro HIGH impact ──────────────────
-    # Aucun trade ne sort si un NFP, FOMC, CPI, etc. arrive dans 24h.
-    # Le score ne compte pas — c'est un veto dur.
-    upcoming = fundamental.get("upcoming_high_impact_events", [])
-    if upcoming:
-        names = ", ".join(e["title"] for e in upcoming[:3])
-        logger.info(f"[{symbol}] Veto macro: {names}")
+    # ── Gate 0: veto dur — événement HIGH-impact dans les 4 prochaines heures ─
+    # (était 24h → bloquait tout. Réduit à 4h : trop dangereux juste avant un NFP/FOMC)
+    upcoming_hard = fundamental.get("upcoming_high_impact_events", [])
+    if upcoming_hard:
+        names = ", ".join(e["title"] for e in upcoming_hard[:3])
+        logger.info(f"[{symbol}] Veto macro <4h: {names}")
         return None
 
     # ── Score each component ─────────────────────────────────────────────────
-    rsi_score,  rsi_bias,  rsi_reason  = score_rsi(technical["rsi"])
-    macd_score, macd_bias, macd_reason = score_macd(technical["macd"])
-    ema_score,  ema_bias,  ema_reason  = score_ema_stack(technical["ema"])
-    sr_score,   sr_bias,   sr_reason   = score_support_resistance(technical["support_resistance"])
-    trend_score, trend_bias, trend_reason = score_trend(technical.get("trend", {}))
-    bb_score,   bb_bias,   bb_reason   = score_bollinger(technical.get("bollinger", {}))
-    vol_score,  vol_bias,  vol_reason  = score_volume(technical.get("volume", {}))
-    cal_score,  cal_bias,  cal_reason  = score_calendar(fundamental)
-    sent_score, sent_bias, sent_reason = score_sentiment(fundamental)
+    rsi_score,    rsi_bias,    rsi_reason    = score_rsi(technical["rsi"])
+    macd_score,   macd_bias,   macd_reason   = score_macd(technical["macd"])
+    ema_score,    ema_bias,    ema_reason    = score_ema_stack(technical["ema"])
+    sr_score,     sr_bias,     sr_reason     = score_support_resistance(technical["support_resistance"])
+    trend_score,  trend_bias,  trend_reason  = score_trend(technical.get("trend", {}))
+    bb_score,     bb_bias,     bb_reason     = score_bollinger(technical.get("bollinger", {}))
+    vol_score,    vol_bias,    vol_reason    = score_volume(technical.get("volume", {}))
+    cal_score,    cal_bias,    cal_reason    = score_calendar(fundamental)
+    sent_score,   sent_bias,   sent_reason   = score_sentiment(fundamental)
+    candle_score, candle_bias, candle_reason = score_candle_patterns(technical.get("candle_patterns", {}))
 
     total = (
         rsi_score + macd_score + ema_score + sr_score
-        + trend_score + bb_score + vol_score + cal_score + sent_score
+        + trend_score + bb_score + vol_score + cal_score + sent_score + candle_score
     )
+
+    # ── Soft penalty: HIGH-impact event in 4-24h (-10 pts, trade still valid) ─
+    upcoming_soft = fundamental.get("upcoming_soft_events", [])
+    macro_penalty = 0.0
+    if upcoming_soft:
+        macro_penalty = 10.0
+        names_soft = ", ".join(e["title"] for e in upcoming_soft[:2])
+        logger.debug(f"[{symbol}] Soft macro penalty -10pts: {names_soft}")
+    total -= macro_penalty
 
     # ── Determine direction + confluence ─────────────────────────────────────
     biases = {
         "rsi": rsi_bias, "macd": macd_bias, "ema": ema_bias, "sr": sr_bias,
         "trend": trend_bias, "bollinger": bb_bias,
+        **({"candles": candle_bias} if candle_bias != "neutral" else {}),
         # Volume only added to biases when real data exists (avoids penalising FOREX)
         **({"volume": vol_bias} if technical.get("volume", {}).get("has_real_volume") else {}),
     }
@@ -615,7 +666,7 @@ def calculate_score(
     signal_scores = {
         "rsi": rsi_score, "macd": macd_score, "ema": ema_score,
         "sr": sr_score, "trend": trend_score, "bollinger": bb_score,
-        "volume": vol_score,
+        "candles": candle_score, "volume": vol_score,
     }
     conflict_penalty, conflicting_signals, conflict_note = calculate_conflict_penalty(
         direction, biases, signal_scores
@@ -708,15 +759,17 @@ def calculate_score(
     }
 
     reasoning = json.dumps({
-        "rsi":               {"score": rsi_score,   "reason": rsi_reason},
-        "macd":              {"score": macd_score,  "reason": macd_reason},
-        "ema":               {"score": ema_score,   "reason": ema_reason},
-        "support_resistance":{"score": sr_score,    "reason": sr_reason},
-        "trend":             {"score": trend_score, "reason": trend_reason},
-        "bollinger":         {"score": bb_score,    "reason": bb_reason},
-        "volume":            {"score": vol_score,   "reason": vol_reason},
-        "calendar":          {"score": cal_score,   "reason": cal_reason},
-        "sentiment":         {"score": sent_score,  "reason": sent_reason},
+        "rsi":               {"score": rsi_score,    "reason": rsi_reason},
+        "macd":              {"score": macd_score,   "reason": macd_reason},
+        "ema":               {"score": ema_score,    "reason": ema_reason},
+        "support_resistance":{"score": sr_score,     "reason": sr_reason},
+        "trend":             {"score": trend_score,  "reason": trend_reason},
+        "bollinger":         {"score": bb_score,     "reason": bb_reason},
+        "candle_patterns":   {"score": candle_score, "reason": candle_reason,
+                              "patterns": technical.get("candle_patterns", {}).get("patterns", [])},
+        "volume":            {"score": vol_score,    "reason": vol_reason},
+        "calendar":          {"score": cal_score,    "reason": cal_reason},
+        "sentiment":         {"score": sent_score,   "reason": sent_reason},
         "confluence": {
             "count":   confluence_count,
             "signals": confluence_signals,
@@ -745,6 +798,7 @@ def calculate_score(
         "score_sr":        sr_score,
         "score_trend":     trend_score,
         "score_bollinger": bb_score,
+        "score_candle":    candle_score,
         "score_volume":    vol_score,
         "score_calendar":  cal_score,
         "score_sentiment": sent_score,

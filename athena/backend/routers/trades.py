@@ -39,6 +39,7 @@ class TradeResponse(BaseModel):
     score_sr: float
     score_trend: float = 0.0
     score_bollinger: float = 0.0
+    score_candle: float = 0.0
     score_volume: float = 0.0
     score_calendar: float
     score_sentiment: float
@@ -76,6 +77,7 @@ class TradeResponse(BaseModel):
             "score_sr": trade.score_sr,
             "score_trend": getattr(trade, "score_trend", 0.0),
             "score_bollinger": getattr(trade, "score_bollinger", 0.0),
+            "score_candle":    getattr(trade, "score_candle", 0.0),
             "score_volume":    getattr(trade, "score_volume", 0.0),
             "score_calendar": trade.score_calendar,
             "score_sentiment": trade.score_sentiment,

@@ -238,6 +238,7 @@ async def run_scan():
                     score_sr=t["score_sr"],
                     score_trend=t.get("score_trend", 0.0),
                     score_bollinger=t.get("score_bollinger", 0.0),
+                    score_candle=t.get("score_candle", 0.0),
                     score_volume=t.get("score_volume", 0.0),
                     score_calendar=t["score_calendar"],
                     score_sentiment=t["score_sentiment"],

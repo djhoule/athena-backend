@@ -82,6 +82,161 @@ def calc_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return adx
 
 
+def detect_candlestick_patterns(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Detects high-probability reversal candlestick patterns on the last 3 candles.
+    Returns a dict of detected patterns with direction bias.
+    """
+    if len(df) < 3:
+        return {"patterns": [], "bias": "neutral"}
+
+    c0 = df.iloc[-1]  # current candle
+    c1 = df.iloc[-2]  # previous candle
+    c2 = df.iloc[-3]  # two candles ago
+
+    o0, h0, l0, cl0 = float(c0["open"]), float(c0["high"]), float(c0["low"]), float(c0["close"])
+    o1, h1, l1, cl1 = float(c1["open"]), float(c1["high"]), float(c1["low"]), float(c1["close"])
+    o2, h2, l2, cl2 = float(c2["open"]), float(c2["high"]), float(c2["low"]), float(c2["close"])
+
+    body0 = abs(cl0 - o0)
+    body1 = abs(cl1 - o1)
+    rng0  = h0 - l0
+    rng1  = h1 - l1
+
+    upper_wick0  = h0 - max(o0, cl0)
+    lower_wick0  = min(o0, cl0) - l0
+    upper_wick1  = h1 - max(o1, cl1)
+    lower_wick1  = min(o1, cl1) - l1
+
+    bullish0 = cl0 > o0
+    bearish0 = cl0 < o0
+    bullish1 = cl1 > o1
+    bearish1 = cl1 < o1
+
+    patterns = []
+    votes = {"bullish": 0, "bearish": 0}
+
+    # ── Bullish Engulfing ──────────────────────────────────────────────────
+    if (bearish1 and bullish0 and
+            o0 <= cl1 and cl0 >= o1 and body0 > body1 * 1.1):
+        patterns.append("Bullish Engulfing")
+        votes["bullish"] += 2
+
+    # ── Bearish Engulfing ──────────────────────────────────────────────────
+    if (bullish1 and bearish0 and
+            o0 >= cl1 and cl0 <= o1 and body0 > body1 * 1.1):
+        patterns.append("Bearish Engulfing")
+        votes["bearish"] += 2
+
+    # ── Hammer (bullish reversal at bottom) ───────────────────────────────
+    if (rng0 > 0 and lower_wick0 >= body0 * 2 and
+            upper_wick0 <= body0 * 0.5 and body0 > 0):
+        patterns.append("Hammer")
+        votes["bullish"] += 1
+
+    # ── Shooting Star (bearish reversal at top) ───────────────────────────
+    if (rng0 > 0 and upper_wick0 >= body0 * 2 and
+            lower_wick0 <= body0 * 0.5 and body0 > 0):
+        patterns.append("Shooting Star")
+        votes["bearish"] += 1
+
+    # ── Bullish Pin Bar (long lower wick, small body at top) ──────────────
+    if (rng0 > 0 and lower_wick0 >= rng0 * 0.6 and
+            body0 <= rng0 * 0.3):
+        patterns.append("Bullish Pin Bar")
+        votes["bullish"] += 2
+
+    # ── Bearish Pin Bar (long upper wick, small body at bottom) ──────────
+    if (rng0 > 0 and upper_wick0 >= rng0 * 0.6 and
+            body0 <= rng0 * 0.3):
+        patterns.append("Bearish Pin Bar")
+        votes["bearish"] += 2
+
+    # ── Doji (indecision — body < 10% of range) ───────────────────────────
+    if rng0 > 0 and body0 <= rng0 * 0.1:
+        patterns.append("Doji")
+        # Doji alone is neutral — context matters
+
+    # ── Morning Star (3-candle bullish reversal) ──────────────────────────
+    if (bearish1 and body1 > 0 and
+            body0 < rng0 * 0.3 and  # small middle body
+            bullish0 and cl0 > (o2 + cl2) / 2):
+        patterns.append("Morning Star")
+        votes["bullish"] += 3
+
+    # ── Evening Star (3-candle bearish reversal) ──────────────────────────
+    if (bullish1 and body1 > 0 and
+            body0 < rng0 * 0.3 and
+            bearish0 and cl0 < (o2 + cl2) / 2):
+        patterns.append("Evening Star")
+        votes["bearish"] += 3
+
+    bias = "bullish" if votes["bullish"] > votes["bearish"] else (
+           "bearish" if votes["bearish"] > votes["bullish"] else "neutral")
+
+    return {
+        "patterns":      patterns,
+        "bias":          bias,
+        "bullish_votes": votes["bullish"],
+        "bearish_votes": votes["bearish"],
+    }
+
+
+def detect_rsi_divergence(df: pd.DataFrame, rsi_series: pd.Series, lookback: int = 30) -> Dict[str, Any]:
+    """
+    Detects RSI divergence over the last `lookback` candles.
+    Bullish divergence : price lower low, RSI higher low  → reversal signal
+    Bearish divergence : price higher high, RSI lower high → reversal signal
+    """
+    if len(df) < lookback or len(rsi_series) < lookback:
+        return {"bullish_divergence": False, "bearish_divergence": False}
+
+    price = df["close"].tail(lookback).values
+    rsi   = rsi_series.tail(lookback).values
+
+    # Find swing lows (for bullish divergence)
+    def find_swing_lows(arr, window=5):
+        lows = []
+        for i in range(window, len(arr) - window):
+            if arr[i] == min(arr[i-window:i+window+1]):
+                lows.append((i, arr[i]))
+        return lows
+
+    def find_swing_highs(arr, window=5):
+        highs = []
+        for i in range(window, len(arr) - window):
+            if arr[i] == max(arr[i-window:i+window+1]):
+                highs.append((i, arr[i]))
+        return highs
+
+    price_lows  = find_swing_lows(price)
+    price_highs = find_swing_highs(price)
+    rsi_lows    = find_swing_lows(rsi)
+    rsi_highs   = find_swing_highs(rsi)
+
+    bullish_div = False
+    bearish_div = False
+
+    # Bullish: last 2 price lows descending, last 2 RSI lows ascending
+    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+        pl1, pl2 = price_lows[-2], price_lows[-1]
+        rl1, rl2 = rsi_lows[-2], rsi_lows[-1]
+        if pl2[1] < pl1[1] and rl2[1] > rl1[1]:
+            bullish_div = True
+
+    # Bearish: last 2 price highs ascending, last 2 RSI highs descending
+    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+        ph1, ph2 = price_highs[-2], price_highs[-1]
+        rh1, rh2 = rsi_highs[-2], rsi_highs[-1]
+        if ph2[1] > ph1[1] and rh2[1] < rh1[1]:
+            bearish_div = True
+
+    return {
+        "bullish_divergence": bullish_div,
+        "bearish_divergence": bearish_div,
+    }
+
+
 def _count_touches(level: float, df: pd.DataFrame, pct: float = 0.005) -> int:
     """
     Count how many candles touched within pct% of the level.
@@ -289,11 +444,16 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     testing_52w_low = abs(current_price - sr["week52_low"]) / current_price < proximity_pct
 
     # ── Trend Direction ──────────────────────────────────────────────────────
-    # Higher highs / Higher lows detection (last 20 candles)
     recent_highs = df["high"].tail(20).values
-    recent_lows = df["low"].tail(20).values
-    uptrend = recent_highs[-1] > recent_highs[-10] and recent_lows[-1] > recent_lows[-10]
+    recent_lows  = df["low"].tail(20).values
+    uptrend   = recent_highs[-1] > recent_highs[-10] and recent_lows[-1] > recent_lows[-10]
     downtrend = recent_highs[-1] < recent_highs[-10] and recent_lows[-1] < recent_lows[-10]
+
+    # ── Candlestick Patterns ─────────────────────────────────────────────────
+    candle_patterns = detect_candlestick_patterns(df)
+
+    # ── RSI Divergence ────────────────────────────────────────────────────────
+    rsi_divergence = detect_rsi_divergence(df, rsi)
 
     return {
         "current_price": current_price,
@@ -307,6 +467,8 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
             "extreme_oversold": rsi_current < 25,
             "extreme_overbought": rsi_current > 75,
             "rising": rsi_current > rsi_prev,
+            "bullish_divergence": rsi_divergence["bullish_divergence"],
+            "bearish_divergence": rsi_divergence["bearish_divergence"],
         },
 
         "macd": {
@@ -359,7 +521,9 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
             "middle": bb_mid_val,
             "pct_b": round(bb_pct_b, 3),
             "squeeze": bb_squeeze,
-            "at_lower_band": bb_pct_b < 0.1,   # price near lower band → oversold
-            "at_upper_band": bb_pct_b > 0.9,   # price near upper band → overbought
+            "at_lower_band": bb_pct_b < 0.1,
+            "at_upper_band": bb_pct_b > 0.9,
         },
+
+        "candle_patterns": candle_patterns,
     }

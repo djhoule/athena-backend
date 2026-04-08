@@ -22,16 +22,38 @@ FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 FXSTREET_RSS_URL  = "https://www.fxstreet.com/rss/news"
 
 SYMBOL_CURRENCIES = {
+    # ── FOREX ──────────────────────────────────────────────────────────────
     "EURUSD": ["EUR", "USD"], "GBPUSD": ["GBP", "USD"],
-    "USDJPY": ["USD", "JPY"], "USDCHF": ["USD", "CHF"],
     "AUDUSD": ["AUD", "USD"], "NZDUSD": ["NZD", "USD"],
-    "USDCAD": ["USD", "CAD"], "GBPJPY": ["GBP", "JPY"],
+    "USDJPY": ["USD", "JPY"], "USDCAD": ["USD", "CAD"],
+    "USDCHF": ["USD", "CHF"], "USDMXN": ["USD", "MXN"],
+    "EURAUD": ["EUR", "AUD"], "EURNZD": ["EUR", "NZD"],
+    "EURCAD": ["EUR", "CAD"], "EURCHF": ["EUR", "CHF"],
     "EURJPY": ["EUR", "JPY"], "EURGBP": ["EUR", "GBP"],
-    "BTC/USDT": ["USD"], "ETH/USDT": ["USD"],
-    "BNB/USDT": ["USD"], "SOL/USDT": ["USD"], "XRP/USDT": ["USD"],
-    "SPY": ["USD"], "QQQ": ["USD"], "DIA": ["USD"],
-    "IWM": ["USD"], "EWG": ["EUR"],
-    "GC=F": ["USD"], "CL=F": ["USD"], "SI=F": ["USD"],
+    "GBPAUD": ["GBP", "AUD"], "GBPNZD": ["GBP", "NZD"],
+    "GBPCAD": ["GBP", "CAD"], "GBPJPY": ["GBP", "JPY"],
+    "GBPCHF": ["GBP", "CHF"],
+    "AUDNZD": ["AUD", "NZD"], "AUDCAD": ["AUD", "CAD"],
+    "AUDJPY": ["AUD", "JPY"], "AUDCHF": ["AUD", "CHF"],
+    "NZDJPY": ["NZD", "JPY"], "NZDCAD": ["NZD", "CAD"],
+    "NZDCHF": ["NZD", "CHF"],
+    "CADCHF": ["CAD", "CHF"], "CADJPY": ["CAD", "JPY"],
+    "CHFJPY": ["CHF", "JPY"],
+    # ── INDICES ─────────────────────────────────────────────────────────────
+    "SP500":  ["USD"], "NAS100": ["USD"], "US30": ["USD"], "US2000": ["USD"],
+    "JP225":  ["JPY"],
+    "CN50":   ["CNY"], "HK33": ["HKD"],
+    "IX00":   ["EUR"], "AEX":  ["EUR"], "EU50": ["EUR"],
+    "IBEX35": ["EUR"], "DAX":  ["EUR"],
+    "AU200":  ["AUD"],
+    # ── CRYPTO ──────────────────────────────────────────────────────────────
+    "BTCUSD": ["USD"], "ETHUSD": ["USD"], "XRPUSD": ["USD"],
+    "XMRUSD": ["USD"], "AVAXUSD": ["USD"], "SOLUSD": ["USD"],
+    # ── COMMODITIES ─────────────────────────────────────────────────────────
+    "GOLD":     ["USD"], "SILVER":   ["USD"], "PLATINUM": ["USD"],
+    "COPPER":   ["USD"], "PALADIUM": ["USD"],
+    "USOIL":    ["USD"], "UKOIL":    ["USD"],
+    "CORN":     ["USD"], "SOYBEAN":  ["USD"], "WHEAT": ["USD"], "SUGAR": ["USD"],
 }
 
 # Keywords for simple sentiment scoring
@@ -448,9 +470,14 @@ async def get_fundamental_signals(
     currencies = SYMBOL_CURRENCIES.get(symbol, ["USD"])
 
     # ── Economic Calendar ────────────────────────────────────────────────────
-    upcoming_high_impact = get_upcoming_events(all_events, currencies, hours_ahead=24)
-    recent_surprises     = get_recent_surprises(all_events, currencies, hours_back=48)
-    surprise_score       = score_economic_surprise(recent_surprises)
+    # Hard veto: HIGH-impact event within 4h (too dangerous to trade)
+    upcoming_hard   = get_upcoming_events(all_events, currencies, hours_ahead=4)
+    # Soft warning: HIGH-impact event within 4-24h (penalty applied in scorer)
+    upcoming_all24  = get_upcoming_events(all_events, currencies, hours_ahead=24)
+    upcoming_soft   = [e for e in upcoming_all24 if e not in upcoming_hard]
+
+    recent_surprises = get_recent_surprises(all_events, currencies, hours_back=48)
+    surprise_score   = score_economic_surprise(recent_surprises)
 
     # ── News Sentiment (FXStreet) ────────────────────────────────────────────
     headlines = await fetch_fxstreet_headlines(currencies)
@@ -464,11 +491,12 @@ async def get_fundamental_signals(
     seasonality = get_seasonality(symbol)
 
     return {
-        "upcoming_high_impact_events": upcoming_high_impact,
+        "upcoming_high_impact_events": upcoming_hard,   # hard veto (≤4h)
+        "upcoming_soft_events":        upcoming_soft,   # soft penalty (4-24h)
         "recent_surprises":            recent_surprises,
         "surprise_score":              surprise_score,
         "sentiment":                   sentiment,
         "headline_count":              len(headlines),
-        "headlines":                   headlines[:10],   # top 10 headlines for analysis display
+        "headlines":                   headlines[:10],
         "seasonality":                 seasonality,
     }
