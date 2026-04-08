@@ -50,4 +50,25 @@ app.include_router(alerts.router, prefix="/alerts", tags=["Alerts"])
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "Athena AI"}
+    from datetime import datetime, timezone
+    return {"status": "ok", "service": "Athena AI", "ts": datetime.now(timezone.utc).isoformat()}
+
+
+_scan_running = False
+
+@app.post("/scan-now")
+async def scan_now():
+    """Trigger an immediate market scan (manual override)."""
+    global _scan_running
+    if _scan_running:
+        return {"status": "already_running", "message": "Scan déjà en cours, patiente quelques secondes."}
+    import asyncio
+    _scan_running = True
+    async def _run():
+        global _scan_running
+        try:
+            await run_scan()
+        finally:
+            _scan_running = False
+    asyncio.create_task(_run())
+    return {"status": "started", "message": "Scan lancé, résultats disponibles dans ~30 secondes."}

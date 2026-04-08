@@ -21,6 +21,25 @@ import time
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# IN-MEMORY OHLCV CACHE (14-minute TTL — slightly less than scan interval)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ohlcv_cache: dict = {}
+_CACHE_TTL = 840  # 14 minutes in seconds
+
+
+def _cache_get(key: str) -> Optional[pd.DataFrame]:
+    entry = _ohlcv_cache.get(key)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["df"]
+    return None
+
+
+def _cache_set(key: str, df: pd.DataFrame):
+    _ohlcv_cache[key] = {"df": df, "ts": time.time()}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DISPLAY NAME → YAHOO FINANCE TICKER MAP
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -177,12 +196,22 @@ async def fetch_forex_ohlcv(symbol: str, timeframe: str = "1d", limit: int = 300
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def fetch_ohlcv(symbol: str, market_type: str, timeframe: str = "1d", limit: int = 300) -> Optional[pd.DataFrame]:
-    """Universal OHLCV fetcher. Resolves display names to Yahoo Finance tickers."""
+    """Universal OHLCV fetcher with caching. Resolves display names to Yahoo Finance tickers."""
     market_type = market_type.upper()
+    cache_key = f"{symbol}_{market_type}_{timeframe}_{limit}"
+
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.debug(f"Cache hit: {cache_key}")
+        return cached
 
     if market_type == "FOREX":
-        return await fetch_forex_ohlcv(symbol, timeframe, limit)
+        df = await fetch_forex_ohlcv(symbol, timeframe, limit)
+    else:
+        ticker = DISPLAY_TICKER_MAP.get(symbol, symbol)
+        df = await fetch_yfinance_ohlcv(ticker, timeframe, limit)
 
-    # Resolve display name → Yahoo Finance ticker
-    ticker = DISPLAY_TICKER_MAP.get(symbol, symbol)
-    return await fetch_yfinance_ohlcv(ticker, timeframe, limit)
+    if df is not None:
+        _cache_set(cache_key, df)
+
+    return df

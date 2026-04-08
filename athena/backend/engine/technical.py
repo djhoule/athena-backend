@@ -82,6 +82,31 @@ def calc_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return adx
 
 
+def calc_pivot_points(df: pd.DataFrame) -> Dict[str, float]:
+    """
+    Classic floor pivot points from previous session (last complete candle).
+    PP  = (H + L + C) / 3
+    R1 = 2*PP - L  |  R2 = PP + (H-L)  |  R3 = H + 2*(PP-L)
+    S1 = 2*PP - H  |  S2 = PP - (H-L)  |  S3 = L - 2*(H-PP)
+    """
+    if len(df) < 2:
+        return {}
+    prev = df.iloc[-2]
+    H = float(prev["high"])
+    L = float(prev["low"])
+    C = float(prev["close"])
+    PP = (H + L + C) / 3
+    return {
+        "PP": round(PP, 6),
+        "R1": round(2 * PP - L, 6),
+        "R2": round(PP + (H - L), 6),
+        "R3": round(H + 2 * (PP - L), 6),
+        "S1": round(2 * PP - H, 6),
+        "S2": round(PP - (H - L), 6),
+        "S3": round(L - 2 * (H - PP), 6),
+    }
+
+
 def detect_candlestick_patterns(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Detects high-probability reversal candlestick patterns on the last 3 candles.
@@ -425,23 +450,33 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
 
     # ── Support & Resistance ─────────────────────────────────────────────────
     sr = find_support_resistance(df)
+    pivots = calc_pivot_points(df)
 
-    # Is price testing a key level? (within 0.5% of nearest S/R)
-    testing_support = False
-    testing_resistance = False
     proximity_pct = 0.005  # 0.5%
 
-    if sr["nearest_support"]:
-        distance_to_support = abs(current_price - sr["nearest_support"]) / current_price
-        testing_support = distance_to_support < proximity_pct
+    # Is price testing swing S/R?
+    testing_support    = False
+    testing_resistance = False
 
-    if sr["nearest_resistance"]:
-        distance_to_resistance = abs(current_price - sr["nearest_resistance"]) / current_price
-        testing_resistance = distance_to_resistance < proximity_pct
+    if sr["nearest_support"] and current_price > 0:
+        testing_support    = abs(current_price - sr["nearest_support"]) / current_price < proximity_pct
+    if sr["nearest_resistance"] and current_price > 0:
+        testing_resistance = abs(current_price - sr["nearest_resistance"]) / current_price < proximity_pct
 
-    # Testing 52W high/low (major levels get extra weight)
-    testing_52w_high = abs(current_price - sr["week52_high"]) / current_price < proximity_pct
-    testing_52w_low = abs(current_price - sr["week52_low"]) / current_price < proximity_pct
+    # Testing 52W high/low
+    testing_52w_high = current_price > 0 and abs(current_price - sr["week52_high"]) / current_price < proximity_pct
+    testing_52w_low  = current_price > 0 and abs(current_price - sr["week52_low"])  / current_price < proximity_pct
+
+    # Is price testing a pivot level? (PP, S1, S2, R1, R2)
+    pivot_level_hit = None
+    pivot_bias      = "neutral"
+    for lvl_name, lvl_val in pivots.items():
+        if lvl_val and current_price > 0:
+            dist = abs(current_price - lvl_val) / current_price
+            if dist < proximity_pct:
+                pivot_level_hit = lvl_name
+                pivot_bias = "long" if lvl_name.startswith("S") else ("short" if lvl_name.startswith("R") else "neutral")
+                break
 
     # ── Trend Direction ──────────────────────────────────────────────────────
     recent_highs = df["high"].tail(20).values
@@ -493,10 +528,13 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
 
         "support_resistance": {
             **sr,
-            "testing_support": testing_support,
+            "testing_support":    testing_support,
             "testing_resistance": testing_resistance,
-            "testing_52w_high": testing_52w_high,
-            "testing_52w_low": testing_52w_low,
+            "testing_52w_high":   testing_52w_high,
+            "testing_52w_low":    testing_52w_low,
+            "pivot_points":       pivots,
+            "pivot_level_hit":    pivot_level_hit,
+            "pivot_bias":         pivot_bias,
         },
 
         "volume": {

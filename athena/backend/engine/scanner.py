@@ -192,11 +192,69 @@ async def run_scan():
             if sym not in seen:
                 seen[sym] = r
             else:
-                # Prefer MTF confirmed over unconfirmed
                 if r.get("mtf_confirmed") and not seen[sym].get("mtf_confirmed"):
                     seen[sym] = r
 
-        top_trades = list(seen.values())[:settings.MAX_TRADES_OUTPUT]
+        deduped = list(seen.values())
+
+        # ── Correlation filter ────────────────────────────────────────────────
+        # Prevent showing multiple correlated trades (same underlying risk).
+        # Groups: US indices / EUR indices / crypto majors / energy / metals.
+        # For FOREX: if two pairs share a currency moving the same way → keep top.
+        CORR_GROUPS = [
+            {"SP500", "NAS100", "US30", "US2000"},
+            {"DAX", "EU50", "IBEX35", "AEX", "IX00"},
+            {"JP225", "HK33", "AU200", "CN50"},
+            {"BTCUSD", "ETHUSD"},
+            {"USOIL", "UKOIL"},
+            {"GOLD", "SILVER", "PLATINUM"},
+        ]
+
+        def forex_currency_exposures(symbol: str, direction: str):
+            """Returns set of (currency, side) tuples for a FOREX pair."""
+            if len(symbol) == 6:
+                base, quote = symbol[:3], symbol[3:]
+                if direction == "LONG":
+                    return {(base, "up"), (quote, "down")}
+                return {(base, "down"), (quote, "up")}
+            return set()
+
+        filtered: List[Dict] = []
+        used_corr_groups: set = set()
+        used_forex_exposures: set = set()
+
+        for trade in deduped:
+            sym = trade["symbol"]
+            mtype = trade["market_type"]
+            direction = trade["direction"]
+
+            # Check non-FOREX correlation groups
+            blocked = False
+            for gi, group in enumerate(CORR_GROUPS):
+                if sym in group:
+                    key = (gi, direction)
+                    if key in used_corr_groups:
+                        logger.debug(f"Correlation filter: skipping {sym} ({direction}) — group already represented")
+                        blocked = True
+                        break
+                    used_corr_groups.add(key)
+                    break
+
+            if blocked:
+                continue
+
+            # FOREX: check currency exposure overlap
+            if mtype == "FOREX":
+                exposures = forex_currency_exposures(sym, direction)
+                overlap = exposures & used_forex_exposures
+                if overlap:
+                    logger.debug(f"Correlation filter: skipping {sym} ({direction}) — currency overlap {overlap}")
+                    continue
+                used_forex_exposures |= exposures
+
+            filtered.append(trade)
+
+        top_trades = filtered[:settings.MAX_TRADES_OUTPUT]
 
         # Always deactivate old active trades first (avoids stale data with 0-scores)
         async with AsyncSessionLocal() as session:

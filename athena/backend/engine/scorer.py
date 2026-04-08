@@ -244,6 +244,16 @@ def score_support_resistance(sr: Dict) -> Tuple[float, str, str]:
         )
         score += 3.0
 
+    # ── Pivot Point bonus (+3 pts) — institutional level confirmation ─────────
+    pivot_hit = sr.get("pivot_level_hit")
+    pivot_b   = sr.get("pivot_bias", "neutral")
+    if pivot_hit:
+        score += 3.0
+        label = "support pivot" if pivot_b == "long" else ("résistance pivot" if pivot_b == "short" else "pivot central")
+        reasons.append(f"Prix au {label} ({pivot_hit}) — niveau institutionnel clé")
+        if bias == "neutral":
+            bias = pivot_b
+
     return min(score, 20.0), bias, " | ".join(reasons)
 
 
