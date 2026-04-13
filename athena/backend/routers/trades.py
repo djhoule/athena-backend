@@ -40,6 +40,7 @@ class TradeResponse(BaseModel):
     score_trend: float = 0.0
     score_bollinger: float = 0.0
     score_candle: float = 0.0
+    score_ichimoku: float = 0.0
     score_volume: float = 0.0
     score_calendar: float
     score_sentiment: float
@@ -77,8 +78,9 @@ class TradeResponse(BaseModel):
             "score_sr": trade.score_sr,
             "score_trend": getattr(trade, "score_trend", 0.0),
             "score_bollinger": getattr(trade, "score_bollinger", 0.0),
-            "score_candle":    getattr(trade, "score_candle", 0.0),
-            "score_volume":    getattr(trade, "score_volume", 0.0),
+            "score_candle":    getattr(trade, "score_candle",   0.0),
+            "score_ichimoku":  getattr(trade, "score_ichimoku", 0.0),
+            "score_volume":    getattr(trade, "score_volume",   0.0),
             "score_calendar": trade.score_calendar,
             "score_sentiment": trade.score_sentiment,
             "confluence_count": getattr(trade, "confluence_count", 0),
@@ -176,6 +178,25 @@ async def reset_all_trades(db: AsyncSession = Depends(get_db)):
     await db.execute(delete(Trade))
     await db.commit()
     return {"status": "ok", "message": "All trades deleted."}
+
+
+@router.get("/live-prices", response_model=dict)
+async def get_live_prices(db: AsyncSession = Depends(get_db)):
+    """Returns current market prices for all active trades (for real-time refresh)."""
+    from engine.data_fetcher import fetch_current_prices
+
+    result = await db.execute(
+        select(Trade.symbol, Trade.market_type)
+        .where(Trade.is_active == True)
+        .distinct()
+    )
+    rows = result.all()
+    if not rows:
+        return {"prices": {}}
+
+    symbol_pairs = [(row.symbol, row.market_type.value) for row in rows]
+    prices = await fetch_current_prices(symbol_pairs)
+    return {"prices": prices}
 
 
 @router.get("/{trade_id}", response_model=dict)

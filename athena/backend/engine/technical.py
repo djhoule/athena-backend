@@ -262,6 +262,98 @@ def detect_rsi_divergence(df: pd.DataFrame, rsi_series: pd.Series, lookback: int
     }
 
 
+def calc_stoch_rsi(
+    rsi_series: pd.Series,
+    period: int = 14,
+    smooth_k: int = 3,
+    smooth_d: int = 3,
+) -> Tuple[pd.Series, pd.Series]:
+    """
+    Stochastic RSI — normalises RSI into 0-100.
+    More sensitive than plain RSI for detecting short-term momentum exhaustion.
+    Returns (stoch_k, stoch_d). Oversold < 20, Overbought > 80.
+    """
+    rsi_min   = rsi_series.rolling(period).min()
+    rsi_max   = rsi_series.rolling(period).max()
+    rsi_range = (rsi_max - rsi_min).replace(0, np.nan)
+    stoch_raw = (rsi_series - rsi_min) / rsi_range
+    stoch_k   = stoch_raw.rolling(smooth_k).mean() * 100
+    stoch_d   = stoch_k.rolling(smooth_d).mean()
+    return stoch_k, stoch_d
+
+
+def calc_ichimoku(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Ichimoku Cloud — institutional trend & momentum system.
+      - Tenkan-sen (9)  : short-term trend (conversion line)
+      - Kijun-sen (26)  : mid-term trend (base line, major S/R)
+      - Senkou Span A   : cloud boundary 1  (avg Tenkan + Kijun)
+      - Senkou Span B   : cloud boundary 2  (Donchian 52-period midpoint)
+      - Chikou Span     : current close vs price 26 bars ago (momentum)
+    All 5 components in agreement = highest-conviction institutional signal.
+    """
+    if len(df) < 52:
+        return {"valid": False}
+
+    def donchian_mid(n: int) -> pd.Series:
+        return (df["high"].rolling(n).max() + df["low"].rolling(n).min()) / 2
+
+    tenkan = donchian_mid(9)
+    kijun  = donchian_mid(26)
+    span_a = (tenkan + kijun) / 2
+    span_b = donchian_mid(52)
+
+    current_price = float(df["close"].iloc[-1])
+    tenkan_val    = float(tenkan.iloc[-1])
+    kijun_val     = float(kijun.iloc[-1])
+
+    # The "present cloud" = Span A/B values that were projected 26 bars ago
+    idx          = -27 if len(df) >= 27 else -1
+    cloud_top    = max(float(span_a.iloc[idx]), float(span_b.iloc[idx]))
+    cloud_bottom = min(float(span_a.iloc[idx]), float(span_b.iloc[idx]))
+
+    price_above_cloud = current_price > cloud_top
+    price_below_cloud = current_price < cloud_bottom
+    price_in_cloud    = not price_above_cloud and not price_below_cloud
+
+    # Future cloud color (current span_a/b → indicates forward momentum)
+    cloud_bullish = float(span_a.iloc[-1]) >= float(span_b.iloc[-1])
+
+    # TK Cross (Tenkan crosses Kijun — entry trigger)
+    tenkan_prev  = float(tenkan.iloc[-2]) if len(tenkan) >= 2 else tenkan_val
+    kijun_prev   = float(kijun.iloc[-2])  if len(kijun)  >= 2 else kijun_val
+    tk_cross_bullish = tenkan_prev <= kijun_prev and tenkan_val > kijun_val
+    tk_cross_bearish = tenkan_prev >= kijun_prev and tenkan_val < kijun_val
+
+    # Price vs Kijun-sen (institutional baseline = dynamic S/R)
+    price_above_kijun = current_price > kijun_val
+
+    # Chikou Span: current close vs price 26 bars ago
+    chikou_bullish = False
+    chikou_bearish = False
+    if len(df) >= 27:
+        price_26_ago   = float(df["close"].iloc[-27])
+        chikou_bullish = current_price > price_26_ago
+        chikou_bearish = current_price < price_26_ago
+
+    return {
+        "valid":             True,
+        "tenkan":            round(tenkan_val, 6),
+        "kijun":             round(kijun_val, 6),
+        "cloud_top":         round(cloud_top, 6),
+        "cloud_bottom":      round(cloud_bottom, 6),
+        "price_above_cloud": price_above_cloud,
+        "price_below_cloud": price_below_cloud,
+        "price_in_cloud":    price_in_cloud,
+        "cloud_bullish":     cloud_bullish,
+        "tk_cross_bullish":  tk_cross_bullish,
+        "tk_cross_bearish":  tk_cross_bearish,
+        "price_above_kijun": price_above_kijun,
+        "chikou_bullish":    chikou_bullish,
+        "chikou_bearish":    chikou_bearish,
+    }
+
+
 def _count_touches(level: float, df: pd.DataFrame, pct: float = 0.005) -> int:
     """
     Count how many candles touched within pct% of the level.
@@ -382,6 +474,16 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     rsi_current = float(rsi.iloc[-1])
     rsi_prev = float(rsi.iloc[-2])
 
+    # ── Stochastic RSI ───────────────────────────────────────────────────────
+    stoch_k, stoch_d = calc_stoch_rsi(rsi)
+    stoch_k_val  = float(stoch_k.iloc[-1])  if not np.isnan(stoch_k.iloc[-1])  else 50.0
+    stoch_d_val  = float(stoch_d.iloc[-1])  if not np.isnan(stoch_d.iloc[-1])  else 50.0
+    stoch_k_prev = float(stoch_k.iloc[-2])  if not np.isnan(stoch_k.iloc[-2])  else stoch_k_val
+    stoch_d_prev = float(stoch_d.iloc[-2])  if not np.isnan(stoch_d.iloc[-2])  else stoch_d_val
+    # Valid crossover only in oversold/overbought zones
+    stoch_bull_cross = stoch_k_prev < stoch_d_prev and stoch_k_val >= stoch_d_val and stoch_k_val < 30
+    stoch_bear_cross = stoch_k_prev > stoch_d_prev and stoch_k_val <= stoch_d_val and stoch_k_val > 70
+
     # ── MACD ─────────────────────────────────────────────────────────────────
     macd_line, signal_line, histogram = calc_macd(close)
     macd_current = float(macd_line.iloc[-1])
@@ -490,6 +592,19 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     # ── RSI Divergence ────────────────────────────────────────────────────────
     rsi_divergence = detect_rsi_divergence(df, rsi)
 
+    # ── Ichimoku Cloud ────────────────────────────────────────────────────────
+    ichimoku = calc_ichimoku(df)
+
+    # ── Market Regime ─────────────────────────────────────────────────────────
+    if adx_current > 30:
+        market_regime = "TRENDING_STRONG"
+    elif adx_current > 20:
+        market_regime = "TRENDING"
+    elif bb_squeeze:
+        market_regime = "SQUEEZE"
+    else:
+        market_regime = "RANGING"
+
     return {
         "current_price": current_price,
         "atr": atr_current,
@@ -504,6 +619,13 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
             "rising": rsi_current > rsi_prev,
             "bullish_divergence": rsi_divergence["bullish_divergence"],
             "bearish_divergence": rsi_divergence["bearish_divergence"],
+            # Stochastic RSI
+            "stoch_k":          round(stoch_k_val, 1),
+            "stoch_d":          round(stoch_d_val, 1),
+            "stoch_oversold":   stoch_k_val < 20,
+            "stoch_overbought": stoch_k_val > 80,
+            "stoch_bull_cross": stoch_bull_cross,
+            "stoch_bear_cross": stoch_bear_cross,
         },
 
         "macd": {
@@ -564,4 +686,6 @@ def calculate_technicals(df: pd.DataFrame) -> Dict[str, Any]:
         },
 
         "candle_patterns": candle_patterns,
+        "ichimoku":        ichimoku,
+        "market_regime":   market_regime,
     }

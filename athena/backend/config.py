@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # ── Push Notifications ────────────────────────────────────────────────────
     EXPO_ACCESS_TOKEN: str = ""
+    DISCORD_WEBHOOK_URL: str = ""
 
     # ── Scan Parameters ───────────────────────────────────────────────────────
     SCAN_INTERVAL_MINUTES: int = 15

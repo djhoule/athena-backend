@@ -81,6 +81,16 @@ def score_rsi(rsi: Dict) -> Tuple[float, str, str]:
         bias = "short"
         reasons.append("Divergence RSI baissière détectée — retournement probable")
 
+    # Stochastic RSI bonus (+1 pt for crossover confirmation in extreme zone)
+    if rsi.get("stoch_bull_cross") and bias != "short":
+        score = min(score + 1.0, 14.0)
+        bias = "long"
+        reasons.append(f"StochRSI croisement haussier en zone survente ({rsi.get('stoch_k', 0):.0f})")
+    elif rsi.get("stoch_bear_cross") and bias != "long":
+        score = min(score + 1.0, 14.0)
+        bias = "short"
+        reasons.append(f"StochRSI croisement baissier en zone surachat ({rsi.get('stoch_k', 100):.0f})")
+
     return score, bias, " | ".join(reasons)
 
 
@@ -367,6 +377,79 @@ def score_volume(vol: Dict) -> Tuple[float, str, str]:
     return score, bias, f"{reason} | {obv_label}"
 
 
+def score_ichimoku(ichi: Dict) -> Tuple[float, str, str]:
+    """
+    Returns (score 0-15, direction bias, reason).
+    Ichimoku is one of the most complete institutional indicators — it encodes
+    trend, momentum, support/resistance, and time all in one system.
+    Scoring (max 11 bullish/bearish points → normalized to 15):
+      +4  Price above/below cloud
+      +2  Cloud color (bullish/bearish)
+      +3  TK Cross OR +1 price vs Kijun
+      +2  Chikou confirmation
+    """
+    if not ichi or not ichi.get("valid"):
+        return 3.0, "neutral", "Ichimoku: données insuffisantes (< 52 bougies)"
+
+    bullish_pts = 0
+    bearish_pts = 0
+    reasons: List[str] = []
+
+    # ── 1. Price vs Cloud (most important: +4) ────────────────────────────────
+    if ichi["price_above_cloud"]:
+        bullish_pts += 4
+        reasons.append(f"Prix au-dessus du nuage (cloud_top={ichi['cloud_top']:.4f})")
+    elif ichi["price_below_cloud"]:
+        bearish_pts += 4
+        reasons.append(f"Prix sous le nuage (cloud_bottom={ichi['cloud_bottom']:.4f})")
+    else:
+        reasons.append("Prix dans le nuage — indécision")
+
+    # ── 2. Cloud color (+2) ────────────────────────────────────────────────────
+    if ichi["cloud_bullish"]:
+        bullish_pts += 2
+        reasons.append("Nuage vert ↗")
+    else:
+        bearish_pts += 2
+        reasons.append("Nuage rouge ↘")
+
+    # ── 3. TK Cross (+3) or Price vs Kijun (+1) ───────────────────────────────
+    if ichi["tk_cross_bullish"]:
+        bullish_pts += 3
+        reasons.append("✅ Croisement TK haussier")
+    elif ichi["tk_cross_bearish"]:
+        bearish_pts += 3
+        reasons.append("✅ Croisement TK baissier")
+    elif ichi["price_above_kijun"]:
+        bullish_pts += 1
+        reasons.append(f"Prix > Kijun ({ichi['kijun']:.4f})")
+    else:
+        bearish_pts += 1
+        reasons.append(f"Prix < Kijun ({ichi['kijun']:.4f})")
+
+    # ── 4. Chikou Span (+2) ────────────────────────────────────────────────────
+    if ichi["chikou_bullish"]:
+        bullish_pts += 2
+        reasons.append("Chikou haussier ✓")
+    elif ichi["chikou_bearish"]:
+        bearish_pts += 2
+        reasons.append("Chikou baissier ✓")
+
+    # ── Resolve score & bias ──────────────────────────────────────────────────
+    if bullish_pts > bearish_pts:
+        bias  = "long"
+        score = min(round(bullish_pts / 11 * 15, 1), 15.0)
+    elif bearish_pts > bullish_pts:
+        bias  = "short"
+        score = min(round(bearish_pts / 11 * 15, 1), 15.0)
+    else:
+        bias  = "neutral"
+        score = 3.0
+
+    score = max(score, 3.0)
+    return score, bias, " | ".join(reasons[:3])
+
+
 def score_calendar(fundamental: Dict) -> Tuple[float, str, str]:
     """
     Returns (score 0-12, direction bias, reason).
@@ -564,6 +647,7 @@ _SIGNAL_LABELS = {
     "bollinger":"Bollinger",
     "candles":  "Pattern Bougie",
     "volume":   "Volume",
+    "ichimoku": "Ichimoku Cloud",
 }
 
 
@@ -643,10 +727,12 @@ def calculate_score(
     cal_score,    cal_bias,    cal_reason    = score_calendar(fundamental)
     sent_score,   sent_bias,   sent_reason   = score_sentiment(fundamental)
     candle_score, candle_bias, candle_reason = score_candle_patterns(technical.get("candle_patterns", {}))
+    ichi_score,   ichi_bias,   ichi_reason   = score_ichimoku(technical.get("ichimoku", {}))
 
     total = (
         rsi_score + macd_score + ema_score + sr_score
-        + trend_score + bb_score + vol_score + cal_score + sent_score + candle_score
+        + trend_score + bb_score + vol_score + cal_score + sent_score
+        + candle_score + ichi_score
     )
 
     # ── Soft penalty: HIGH-impact event in 4-24h (-10 pts, trade still valid) ─
@@ -662,7 +748,8 @@ def calculate_score(
     biases = {
         "rsi": rsi_bias, "macd": macd_bias, "ema": ema_bias, "sr": sr_bias,
         "trend": trend_bias, "bollinger": bb_bias,
-        **({"candles": candle_bias} if candle_bias != "neutral" else {}),
+        **({"candles":   candle_bias} if candle_bias != "neutral" else {}),
+        **({"ichimoku":  ichi_bias}   if ichi_bias   != "neutral" else {}),
         # Volume only added to biases when real data exists (avoids penalising FOREX)
         **({"volume": vol_bias} if technical.get("volume", {}).get("has_real_volume") else {}),
     }
@@ -676,7 +763,7 @@ def calculate_score(
     signal_scores = {
         "rsi": rsi_score, "macd": macd_score, "ema": ema_score,
         "sr": sr_score, "trend": trend_score, "bollinger": bb_score,
-        "candles": candle_score, "volume": vol_score,
+        "candles": candle_score, "volume": vol_score, "ichimoku": ichi_score,
     }
     conflict_penalty, conflicting_signals, conflict_note = calculate_conflict_penalty(
         direction, biases, signal_scores
@@ -777,6 +864,14 @@ def calculate_score(
         "bollinger":         {"score": bb_score,     "reason": bb_reason},
         "candle_patterns":   {"score": candle_score, "reason": candle_reason,
                               "patterns": technical.get("candle_patterns", {}).get("patterns", [])},
+        "ichimoku":          {"score": ichi_score,   "reason": ichi_reason,
+                              "cloud_top": technical.get("ichimoku", {}).get("cloud_top"),
+                              "cloud_bottom": technical.get("ichimoku", {}).get("cloud_bottom"),
+                              "tenkan": technical.get("ichimoku", {}).get("tenkan"),
+                              "kijun": technical.get("ichimoku", {}).get("kijun"),
+                              "above_cloud": technical.get("ichimoku", {}).get("price_above_cloud", False),
+                              "below_cloud": technical.get("ichimoku", {}).get("price_below_cloud", False),
+                              "market_regime": technical.get("market_regime", "UNKNOWN")},
         "volume":            {"score": vol_score,    "reason": vol_reason},
         "calendar":          {"score": cal_score,    "reason": cal_reason},
         "sentiment":         {"score": sent_score,   "reason": sent_reason},
@@ -801,20 +896,21 @@ def calculate_score(
     }, ensure_ascii=False)
 
     return {
-        "score_total":     round(adjusted_total, 1),
-        "score_rsi":       rsi_score,
-        "score_macd":      macd_score,
-        "score_ema":       ema_score,
-        "score_sr":        sr_score,
-        "score_trend":     trend_score,
-        "score_bollinger": bb_score,
-        "score_candle":    candle_score,
-        "score_volume":    vol_score,
-        "score_calendar":  cal_score,
-        "score_sentiment": sent_score,
+        "score_total":      round(adjusted_total, 1),
+        "score_rsi":        rsi_score,
+        "score_macd":       macd_score,
+        "score_ema":        ema_score,
+        "score_sr":         sr_score,
+        "score_trend":      trend_score,
+        "score_bollinger":  bb_score,
+        "score_candle":     candle_score,
+        "score_ichimoku":   ichi_score,
+        "score_volume":     vol_score,
+        "score_calendar":   cal_score,
+        "score_sentiment":  sent_score,
         "confluence_count": confluence_count,
-        "direction":       direction,
-        "grade":           grade,
-        "reasoning":       reasoning,
+        "direction":        direction,
+        "grade":            grade,
+        "reasoning":        reasoning,
         **levels,
     }

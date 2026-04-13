@@ -79,6 +79,7 @@ class Trade(Base):
     score_trend: Mapped[float] = mapped_column(Float, default=0.0)
     score_bollinger: Mapped[float] = mapped_column(Float, default=0.0)
     score_candle: Mapped[float] = mapped_column(Float, default=0.0)
+    score_ichimoku: Mapped[float] = mapped_column(Float, default=0.0)
     score_volume: Mapped[float] = mapped_column(Float, default=0.0)
     score_calendar: Mapped[float] = mapped_column(Float)
     score_sentiment: Mapped[float] = mapped_column(Float)
@@ -139,7 +140,10 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Safe migration: add new columns if they don't exist yet
-        for col, col_type in [("score_candle", "FLOAT DEFAULT 0.0")]:
+        for col, col_type in [
+            ("score_candle",   "FLOAT DEFAULT 0.0"),
+            ("score_ichimoku", "FLOAT DEFAULT 0.0"),
+        ]:
             try:
                 await conn.execute(
                     __import__("sqlalchemy").text(

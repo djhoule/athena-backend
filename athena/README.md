@@ -1,174 +1,236 @@
 # ATHENA AI — High-Probability Trade Scanner
 
-Application mobile complète qui scanne Forex, Indices, Crypto et Commodités
-toutes les 15 minutes et sort les 2-3 meilleurs setups du moment.
+Scanner algorithmique qui analyse Forex, Indices, Crypto et Commodités
+toutes les 15 minutes et sort les meilleurs setups selon un score composite.
 
 ---
 
-## 📁 Structure
+## Liens rapides
+
+| Ressource | URL |
+|---|---|
+| Backend prod | https://athena-backend-production-7bd6.up.railway.app |
+| Swagger UI (prod) | https://athena-backend-production-7bd6.up.railway.app/docs |
+| Swagger UI (local) | http://localhost:8000/docs |
+| Railway dashboard | https://railway.app |
+| Supabase dashboard | https://supabase.com/dashboard |
+
+---
+
+## Structure du projet
 
 ```
-athena/
-├── backend/          ← Python + FastAPI (le moteur)
-│   ├── main.py
-│   ├── config.py
-│   ├── requirements.txt
-│   ├── engine/
-│   │   ├── data_fetcher.py    ← OHLCV (CCXT, yFinance, Alpha Vantage)
-│   │   ├── technical.py       ← RSI, MACD, EMA, Support/Résistance
-│   │   ├── fundamental.py     ← Calendrier éco + Sentiment NLP
-│   │   ├── scorer.py          ← Scoring composite 0-100
-│   │   ├── scanner.py         ← Orchestrateur (tourne toutes les 15min)
-│   │   └── notifications.py   ← Push notifications Expo
-│   ├── routers/
-│   │   ├── trades.py          ← GET /trades/top, /history, /{id}
-│   │   ├── auth.py            ← POST /auth/login, /register, /push-token
-│   │   └── alerts.py          ← GET/PUT /alerts/config
-│   └── models/
-│       └── database.py        ← SQLAlchemy models + init DB
-└── mobile/           ← React Native + Expo (l'app)
-    ├── App.tsx                 ← Navigation principale
-    ├── package.json
-    └── src/
-        ├── services/api.ts     ← Axios client + tous les appels API
-        ├── store/useStore.ts   ← Zustand global state
-        ├── components/
-        │   ├── TradeCard.tsx   ← Carte principale d'un setup
-        │   └── ScoreGauge.tsx  ← Gauge circulaire du score
-        └── screens/
-            ├── DashboardScreen.tsx
-            ├── HistoryScreen.tsx
-            ├── SettingsScreen.tsx
-            └── LoginScreen.tsx
+3 - SWISH TRADING/
+├── athena-backend/
+│   ├── Dockerfile
+│   ├── railway.toml
+│   └── athena/backend/
+│       ├── .env                  ← secrets locaux (sur OneDrive, non commité)
+│       ├── .env.example          ← template de référence
+│       ├── requirements.txt
+│       ├── config.py             ← tous les paramètres modifiables
+│       ├── main.py
+│       ├── engine/
+│       │   ├── data_fetcher.py   ← OHLCV: Yahoo Finance v8 + Binance public
+│       │   ├── technical.py      ← RSI, MACD, EMA, Ichimoku, S/R, Bollinger
+│       │   ├── scorer.py         ← score composite 0-100 + trade builder
+│       │   ├── scanner.py        ← orchestrateur (scan toutes les 15min)
+│       │   ├── fundamental.py    ← calendrier éco + sentiment
+│       │   ├── outcome_checker.py← ferme les trades arrivés à TP/SL
+│       │   └── notifications.py  ← push Expo + embeds Discord
+│       ├── routers/
+│       │   ├── trades.py         ← GET /trades, /live-prices, /history
+│       │   ├── auth.py           ← POST /auth/login, /register
+│       │   └── alerts.py         ← GET/PUT /alerts/config
+│       └── models/
+│           └── database.py       ← SQLAlchemy models + migration auto
+├── athena-mobile/
+│   └── athena/mobile/
+│       ├── .env                  ← EXPO_PUBLIC_API_URL (sur OneDrive)
+│       ├── .env.example
+│       ├── App.tsx
+│       ├── package.json
+│       └── src/
+│           ├── services/api.ts
+│           ├── store/useStore.ts
+│           ├── components/
+│           └── screens/
+├── setup.bat                     ← POINT D'ENTRÉE nouveau PC
+└── run-backend.bat               ← lance le backend local
 ```
 
 ---
 
-## 🚀 Installation Backend
+## Setup sur nouveau PC
 
-### 1. Prérequis
-- Python 3.11+
-- PostgreSQL (ou Supabase pour hébergement gratuit)
-- Redis (optionnel, pour cache)
+### Prérequis
+- **Python 3.11+** — https://python.org/downloads (cocher "Add to PATH")
+- **Node.js 18+** — https://nodejs.org
+- **Git** — https://git-scm.com (optionnel si OneDrive déjà synchronisé)
 
-### 2. Setup
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+### Démarrage rapide
+
+```
+1. Attendre que OneDrive finisse de synchroniser le dossier
+2. Double-cliquer sur setup.bat  (recrée venv + node_modules)
+3. Double-cliquer sur run-backend.bat  (démarre le backend local)
 ```
 
-### 3. Variables d'environnement
-Crée un fichier `.env` dans `backend/` :
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/athena
-SECRET_KEY=ton-secret-32-chars-minimum
-POLYGON_API_KEY=ton-cle-polygon       # polygon.io (gratuit pour démarrer)
-ALPHA_VANTAGE_KEY=ton-cle-av          # alphavantage.co (gratuit 25 req/day)
-NEWS_API_KEY=ton-cle-newsapi          # newsapi.org (gratuit 100 req/day)
-EXPO_ACCESS_TOKEN=ton-token-expo      # expo.dev (gratuit)
+> **Pourquoi setup.bat ?**
+> Le `venv/` Python et `node_modules/` sont spécifiques à chaque machine.
+> Même si OneDrive les synchronise, ils ne fonctionneront pas directement.
+> `setup.bat` les supprime et les recrée proprement à chaque nouveau PC.
+
+### Exclure venv/ et node_modules/ de OneDrive (recommandé)
+
+Ces dossiers font plusieurs centaines de MB et ne doivent pas se synchroniser.
+Pour les exclure :
+
+```
+Clic droit sur le dossier venv\ (ou node_modules\)
+→ OneDrive → "Ne pas synchroniser sur cet appareil"
 ```
 
-> **Note:** L'app fonctionne sans toutes les clés. yFinance est le fallback
-> gratuit pour Forex (EURUSD=X) et Commodités. CCXT/Binance ne requiert
-> pas de clé pour les données publiques. ForexFactory RSS est gratuit.
+Ou depuis les paramètres OneDrive :
+```
+Icône OneDrive dans la barre → Paramètres → Compte → Choisir les dossiers
+```
 
-### 4. Lancer
+### Variables d'environnement
+
+Le fichier `.env` est sur OneDrive — il sera déjà présent après la sync.
+Si ce n'est pas le cas, copie `.env.example` → `.env` et remplis les valeurs.
+
+**Variables requises** (backend) :
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Connection string Supabase (postgresql+asyncpg://...) |
+| `SECRET_KEY` | Clé JWT aléatoire 32+ caractères |
+
+**Variables optionnelles** (backend) :
+| Variable | Description |
+|---|---|
+| `ALPHA_VANTAGE_KEY` | Données fondamentales (gratuit 25 req/day) |
+| `DISCORD_WEBHOOK_URL` | Alertes Grade A sur Discord |
+| `EXPO_ACCESS_TOKEN` | Push notifications mobiles |
+
+**Variable requise** (mobile) :
+| Variable | Description |
+|---|---|
+| `EXPO_PUBLIC_API_URL` | URL du backend (production ou IP locale) |
+
+---
+
+## Lancer le backend en local
+
 ```bash
+cd athena-backend/athena/backend
+venv\Scripts\activate
 uvicorn main:app --reload --port 8000
 ```
 
-Swagger UI disponible sur: http://localhost:8000/docs
+Ou simplement : **double-cliquer `run-backend.bat`** à la racine.
+
+Swagger UI : http://localhost:8000/docs
+
+### Tester le scanner manuellement
+
+```bash
+# Déclenche un scan immédiat (sans attendre 15min)
+curl -X POST http://localhost:8000/scan-now
+```
 
 ---
 
-## 📱 Installation Mobile
+## Lancer l'app mobile
 
-### 1. Prérequis
-- Node.js 18+
-- Expo CLI: `npm install -g expo-cli`
-- Expo Go sur ton téléphone (iOS/Android)
-
-### 2. Setup
 ```bash
-cd mobile
-npm install
-```
-
-### 3. Config API
-Crée `.env` dans `mobile/` :
-```env
-EXPO_PUBLIC_API_URL=http://TON_IP_LOCAL:8000
-```
-> Pour tester en local, utilise ton IP LAN (pas `localhost` depuis le téléphone).
-> Ex: `EXPO_PUBLIC_API_URL=http://192.168.1.100:8000`
-
-### 4. Lancer
-```bash
+cd athena-mobile/athena/mobile
 npx expo start
 ```
-Scan le QR code avec Expo Go.
 
----
+Scan le QR code avec Expo Go (iOS/Android).
 
-## 📊 Logique de Scoring
-
-| Critère | Poids | Logique |
-|---|---|---|
-| Support/Résistance | 25pts | Niveau clé testé, 52W H/L |
-| RSI | 15pts | Survente (<35) ou surachat (>65) |
-| MACD | 15pts | Crossover confirmé + position zéro |
-| EMA Stack | 15pts | Alignement des 3 EMAs (20/50/200) |
-| Calendrier Éco | 15pts | Événement high-impact = pénalité |
-| Sentiment NLP | 15pts | FinBERT sur 30 headlines récentes |
-
-**Seuils:**
-- Score ≥ 80 → Grade A 🏆
-- Score ≥ 65 → Grade B ⭐
-- Score < 65 → Ignoré
-
-**R:R minimum:** 1:1.5 (calculé avec ATR × 1.5 pour le SL)
-
----
-
-## 🔧 Personnalisation
-
-Pour modifier la watchlist, édite `backend/config.py` :
-```python
-FOREX_PAIRS = ["EURUSD", "GBPUSD", ...]
-CRYPTO_PAIRS = ["BTC/USDT", "ETH/USDT", ...]
+Pour dev local, mettre l'IP LAN dans `.env` :
 ```
-
-Pour modifier les seuils de scoring, édite `backend/engine/scorer.py`.
-
-Pour changer l'intervalle de scan, modifie dans `config.py` :
-```python
-SCAN_INTERVAL_MINUTES = 15  # ex: 30 pour toutes les 30min
+EXPO_PUBLIC_API_URL=http://192.168.1.XXX:8000
 ```
 
 ---
 
-## 🚢 Déploiement Production
+## Déploiement Production (Railway)
 
-### Backend
 ```bash
-# Railway.app (recommandé — gratuit tier)
+cd athena-backend
 railway login
 railway up
 ```
 
-### Mobile
-```bash
-# Build EAS
-npm install -g eas-cli
-eas build --platform all
+Variables d'environnement Railway à configurer (Settings → Variables) :
+- `DATABASE_URL`
+- `SECRET_KEY`
+- `DISCORD_WEBHOOK_URL`
+- `ALPHA_VANTAGE_KEY` (optionnel)
+- `EXPO_ACCESS_TOKEN` (optionnel)
+
+Le backend se redémarre automatiquement à chaque `railway up`.
+
+---
+
+## Sources de données
+
+| Asset | Source | Clé API requise |
+|---|---|---|
+| Forex (EURUSD=X...) | Yahoo Finance v8 chart API | Non |
+| Indices (^GSPC...) | Yahoo Finance v8 chart API | Non |
+| Commodités (GC=F...) | Yahoo Finance v8 chart API | Non |
+| Crypto (BTC, ETH...) | Binance public API | Non |
+
+Toutes les sources de données de marché sont gratuites et sans clé API.
+
+---
+
+## Logique de Scoring
+
+| Critère | Poids | Signal |
+|---|---|---|
+| RSI + Divergence | 12 pts | Survente/surachat + divergence haussière/baissière |
+| MACD | 12 pts | Crossover confirmé + position relative au zéro |
+| EMA Stack (20/50/200) | 15 pts | Alignement directionnel des 3 EMAs |
+| Support / Résistance | 20 pts | Niveau clé testé, touches multiples, 52W H/L |
+| Trend + ADX | 10 pts | Tendance structurelle + force du trend |
+| Bollinger Bands | 8 pts | Prix aux bandes, squeeze, %B |
+| Ichimoku Cloud | 10 pts | Price vs cloud, TK cross, Chikou |
+| Calendrier Éco | 12 pts | Pénalité si événement high-impact proche |
+| Sentiment NLP | 11 pts | Headlines récentes |
+
+**Seuils :**
+- Score ≥ 82 → Grade A (Discord alert)
+- Score ≥ 72 → Grade B
+- Score < 72 → Ignoré
+
+**Filtres additionnels :**
+- R:R minimum 2.0 (calculé avec ATR × 1.5 pour le SL)
+- Filtre de corrélation : pas 2 trades sur la même paire USD/EUR/JPY simultanément
+- MTF confirmation : signal identique sur 1D + 4H = bonus
+
+---
+
+## Paramètres modifiables
+
+Tout se configure dans `athena-backend/athena/backend/config.py` :
+
+```python
+MIN_SCORE_THRESHOLD = 74    # score minimum pour retenir un trade
+MIN_CONFLUENCE = 3          # nombre minimum de signaux alignés
+MIN_RISK_REWARD = 2.0       # R:R minimum
+SCAN_INTERVAL_MINUTES = 15  # fréquence du scan
+MAX_TRADES_OUTPUT = 10      # max trades actifs en même temps
 ```
 
 ---
 
 ## ⚠️ Disclaimer
 
-Cet outil est fourni à titre informatif uniquement.
-Les signaux générés algorithmiquement ne constituent pas des conseils financiers.
-Tradez responsablement. Le capital est à risque.
+Outil informatif uniquement. Les signaux algorithmiques ne constituent
+pas des conseils financiers. Tradez responsablement. Le capital est à risque.

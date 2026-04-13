@@ -256,70 +256,110 @@ async def run_scan():
 
         top_trades = filtered[:settings.MAX_TRADES_OUTPUT]
 
-        # Always deactivate old active trades first (avoids stale data with 0-scores)
+        # Keys of trades that qualify this scan
+        top_keys = {(t["symbol"], t["direction"]) for t in top_trades}
+
+        # ── Step 1: deactivate only trades that DROPPED OUT of the top list ─────
+        # (previously we deactivated ALL then re-skipped duplicates → trades went
+        #  invisible even though the same setup was still the best pick)
         async with AsyncSessionLocal() as session:
-            from sqlalchemy import update
-            await session.execute(
-                update(Trade).where(Trade.is_active == True).values(is_active=False)
+            from sqlalchemy import select as sa_select, update as sa_update
+            result = await session.execute(
+                sa_select(Trade).where(Trade.is_active == True)
             )
+            for active in result.scalars().all():
+                if (active.symbol, active.direction.value) not in top_keys:
+                    active.is_active = False
             await session.commit()
 
         if not top_trades:
             logger.info("No qualifying trades found this scan.")
             return
 
-        # Save to database
+        # ── Step 2: upsert — re-activate existing PENDING or create new ─────────
         async with AsyncSessionLocal() as session:
-            from sqlalchemy import select
+            from sqlalchemy import select as sa_select
 
-            # Load existing PENDING trades to avoid duplicates (same symbol+direction)
-            existing = await session.execute(
-                select(Trade.symbol, Trade.direction).where(Trade.outcome == "PENDING")
+            # Load existing PENDING trades as full objects (need to update them)
+            result = await session.execute(
+                sa_select(Trade).where(Trade.outcome == "PENDING")
             )
-            pending_keys = {(row.symbol, row.direction.value) for row in existing}
+            pending_map: Dict[tuple, Trade] = {
+                (row.symbol, row.direction.value): row
+                for row in result.scalars().all()
+            }
 
-            new_trades = []
+            new_count = updated_count = 0
             for t in top_trades:
-                key = (t["symbol"], t["direction"])
-                if key in pending_keys:
-                    logger.debug(f"Skipping duplicate PENDING: {t['symbol']} {t['direction']}")
-                    continue
-                trade = Trade(
-                    symbol=t["symbol"],
-                    market_type=MarketType(t["market_type"]),
-                    direction=TradeDirection(t["direction"]),
-                    grade=TradeGrade(t["grade"]),
-                    score_total=t["score_total"],
-                    score_rsi=t["score_rsi"],
-                    score_macd=t["score_macd"],
-                    score_ema=t["score_ema"],
-                    score_sr=t["score_sr"],
-                    score_trend=t.get("score_trend", 0.0),
-                    score_bollinger=t.get("score_bollinger", 0.0),
-                    score_candle=t.get("score_candle", 0.0),
-                    score_volume=t.get("score_volume", 0.0),
-                    score_calendar=t["score_calendar"],
-                    score_sentiment=t["score_sentiment"],
-                    confluence_count=t.get("confluence_count", 0),
-                    entry_price=t["entry"],
-                    stop_loss=t["stop_loss"],
-                    take_profit_1=t["take_profit_1"],
-                    take_profit_2=t["take_profit_2"],
-                    risk_reward=t["risk_reward"],
-                    current_price=t["entry"],
-                    timeframe=t["timeframe"],
-                    reasoning=t["reasoning"],
-                    is_active=True,
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=16),
-                )
-                session.add(trade)
-                new_trades.append(trade)
+                key   = (t["symbol"], t["direction"])
+                now16 = datetime.now(timezone.utc) + timedelta(hours=16)
+
+                if key in pending_map:
+                    # ── Re-activate + refresh existing PENDING trade ──────────
+                    ex = pending_map[key]
+                    ex.is_active        = True
+                    ex.grade            = TradeGrade(t["grade"])
+                    ex.score_total      = t["score_total"]
+                    ex.score_rsi        = t["score_rsi"]
+                    ex.score_macd       = t["score_macd"]
+                    ex.score_ema        = t["score_ema"]
+                    ex.score_sr         = t["score_sr"]
+                    ex.score_trend      = t.get("score_trend", 0.0)
+                    ex.score_bollinger  = t.get("score_bollinger", 0.0)
+                    ex.score_candle     = t.get("score_candle", 0.0)
+                    ex.score_ichimoku   = t.get("score_ichimoku", 0.0)
+                    ex.score_volume     = t.get("score_volume", 0.0)
+                    ex.score_calendar   = t["score_calendar"]
+                    ex.score_sentiment  = t["score_sentiment"]
+                    ex.confluence_count = t.get("confluence_count", 0)
+                    ex.entry_price      = t["entry"]
+                    ex.stop_loss        = t["stop_loss"]
+                    ex.take_profit_1    = t["take_profit_1"]
+                    ex.take_profit_2    = t["take_profit_2"]
+                    ex.risk_reward      = t["risk_reward"]
+                    ex.current_price    = t["entry"]
+                    ex.timeframe        = t["timeframe"]
+                    ex.reasoning        = t["reasoning"]
+                    ex.expires_at       = now16
+                    updated_count += 1
+                else:
+                    # ── Brand-new setup → create Trade record ─────────────────
+                    session.add(Trade(
+                        symbol=t["symbol"],
+                        market_type=MarketType(t["market_type"]),
+                        direction=TradeDirection(t["direction"]),
+                        grade=TradeGrade(t["grade"]),
+                        score_total=t["score_total"],
+                        score_rsi=t["score_rsi"],
+                        score_macd=t["score_macd"],
+                        score_ema=t["score_ema"],
+                        score_sr=t["score_sr"],
+                        score_trend=t.get("score_trend", 0.0),
+                        score_bollinger=t.get("score_bollinger", 0.0),
+                        score_candle=t.get("score_candle", 0.0),
+                        score_ichimoku=t.get("score_ichimoku", 0.0),
+                        score_volume=t.get("score_volume", 0.0),
+                        score_calendar=t["score_calendar"],
+                        score_sentiment=t["score_sentiment"],
+                        confluence_count=t.get("confluence_count", 0),
+                        entry_price=t["entry"],
+                        stop_loss=t["stop_loss"],
+                        take_profit_1=t["take_profit_1"],
+                        take_profit_2=t["take_profit_2"],
+                        risk_reward=t["risk_reward"],
+                        current_price=t["entry"],
+                        timeframe=t["timeframe"],
+                        reasoning=t["reasoning"],
+                        is_active=True,
+                        expires_at=now16,
+                    ))
+                    new_count += 1
 
             await session.commit()
 
             mtf_count = sum(1 for t in top_trades if t.get("mtf_confirmed"))
             logger.info(
-                f"✅ Saved {len(new_trades)} trades "
+                f"✅ {new_count} new + {updated_count} refreshed trades "
                 f"({mtf_count} MTF confirmed): {[t['symbol'] for t in top_trades]}"
             )
 
