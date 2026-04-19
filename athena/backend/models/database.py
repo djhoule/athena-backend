@@ -108,6 +108,13 @@ class Trade(Base):
     outcome_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     pnl_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # ex: +2.5, -1.0
 
+    # Position sizing — lot size calculé pour risquer 1 000 USD par trade
+    lot_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Discord tracking — message_id du message envoyé pour ce trade (Grade A uniquement)
+    # Permet d'éditer le message quand le statut change (WIN / LOSS / EXPIRED)
+    discord_message_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
 
 class UserTradeAction(Base):
     __tablename__ = "user_trade_actions"
@@ -141,8 +148,10 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # Safe migration: add new columns if they don't exist yet
         for col, col_type in [
-            ("score_candle",   "FLOAT DEFAULT 0.0"),
-            ("score_ichimoku", "FLOAT DEFAULT 0.0"),
+            ("score_candle",       "FLOAT DEFAULT 0.0"),
+            ("score_ichimoku",     "FLOAT DEFAULT 0.0"),
+            ("lot_size",           "FLOAT"),                  # Amélioration 1 — position sizing
+            ("discord_message_id", "VARCHAR(50)"),            # Amélioration 2 — Discord dedup
         ]:
             try:
                 await conn.execute(

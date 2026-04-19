@@ -23,7 +23,7 @@ from engine.technical import calculate_technicals
 from engine.fundamental import fetch_forex_factory_events, get_fundamental_signals
 from engine.scorer import calculate_score
 from models.database import AsyncSessionLocal, Trade, MarketType, TradeDirection, TradeGrade
-from engine.notifications import send_trade_alerts, send_discord_alert
+from engine.notifications import send_trade_alerts, send_discord_alert, calculate_lot_size
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +294,14 @@ async def run_scan():
                 key   = (t["symbol"], t["direction"])
                 now16 = datetime.now(timezone.utc) + timedelta(hours=16)
 
+                # ── Calcul du lot size pour risquer 1 000 USD ────────────────
+                lot = calculate_lot_size(
+                    entry_price=t["entry"],
+                    stop_loss=t["stop_loss"],
+                    risk_usd=1000,
+                    atr=t.get("atr"),
+                )
+
                 if key in pending_map:
                     # ── Re-activate + refresh existing PENDING trade ──────────
                     ex = pending_map[key]
@@ -321,6 +329,7 @@ async def run_scan():
                     ex.timeframe        = t["timeframe"]
                     ex.reasoning        = t["reasoning"]
                     ex.expires_at       = now16
+                    ex.lot_size         = lot   # mise à jour du lot size
                     updated_count += 1
                 else:
                     # ── Brand-new setup → create Trade record ─────────────────
@@ -350,8 +359,10 @@ async def run_scan():
                         current_price=t["entry"],
                         timeframe=t["timeframe"],
                         reasoning=t["reasoning"],
+                        lot_size=lot,        # Amélioration 1 — lot size
                         is_active=True,
                         expires_at=now16,
+                        # discord_message_id laissé NULL → sera rempli après envoi Discord
                     ))
                     new_count += 1
 
@@ -363,8 +374,48 @@ async def run_scan():
                 f"({mtf_count} MTF confirmed): {[t['symbol'] for t in top_trades]}"
             )
 
+        # ── Expo push (Grade A seulement) ─────────────────────────────────────
         await send_trade_alerts(top_trades)
-        await send_discord_alert(top_trades)
+
+        # ── Discord : un message par trade Grade A jamais encore notifié ──────
+        # On interroge la DB pour avoir les objets ORM avec leurs id réels,
+        # puis on filtre sur discord_message_id IS NULL (pas encore envoyé).
+        # Cela couvre aussi les trades B qui seraient montés en Grade A depuis
+        # le dernier scan, sans qu'on leur envoie un doublon.
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select as sa_select
+
+            result = await session.execute(
+                sa_select(Trade).where(
+                    Trade.grade      == TradeGrade.A,
+                    Trade.outcome    == "PENDING",
+                    Trade.is_active  == True,
+                    Trade.discord_message_id == None,
+                )
+            )
+            new_grade_a_trades = result.scalars().all()
+
+            if new_grade_a_trades:
+                logger.info(
+                    f"Discord : {len(new_grade_a_trades)} nouveau(x) Grade A "
+                    f"à notifier : {[t.symbol for t in new_grade_a_trades]}"
+                )
+                # Envoi individuel — retourne {trade_id: discord_message_id}
+                id_to_msg = await send_discord_alert(new_grade_a_trades)
+
+                # Persistance des message_ids en DB
+                for trade_obj in new_grade_a_trades:
+                    msg_id = id_to_msg.get(trade_obj.id)
+                    if msg_id:
+                        trade_obj.discord_message_id = msg_id
+
+                await session.commit()
+                logger.info(
+                    f"Discord message_ids enregistrés pour "
+                    f"{len(id_to_msg)} trade(s)"
+                )
+            else:
+                logger.debug("Discord : aucun nouveau Grade A à notifier ce scan.")
 
     except Exception as e:
         logger.error(f"run_scan error: {e}", exc_info=True)

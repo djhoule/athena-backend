@@ -631,6 +631,7 @@ def build_trade_levels(
         "take_profit_1": round(tp1, 6),
         "take_profit_2": round(tp2, 6),
         "risk_reward": round(actual_rr, 2),
+        "atr": round(atr, 6),   # exposé pour le calcul de lot size
     }
 
 

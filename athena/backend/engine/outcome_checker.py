@@ -146,8 +146,23 @@ async def _update_outcome(
     pnl_r: Optional[float],
     outcome_price: Optional[float],
 ):
-    """Writes the outcome to the database."""
+    """
+    Écrit l'outcome en DB.
+    Si le trade avait un message Discord associé (discord_message_id non nul),
+    édite ce message pour afficher le résultat final (WIN / LOSS / EXPIRED).
+    """
+    discord_message_id: Optional[str] = None
+
+    # ── 1. Charger le trade pour récupérer discord_message_id ───────────────
     async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Trade).where(Trade.id == trade_id)
+        )
+        trade = result.scalar_one_or_none()
+        if trade:
+            discord_message_id = trade.discord_message_id
+
+        # ── 2. Mettre à jour l'outcome en DB ────────────────────────────────
         await session.execute(
             update(Trade)
             .where(Trade.id == trade_id)
@@ -159,3 +174,31 @@ async def _update_outcome(
             )
         )
         await session.commit()
+
+    # ── 3. Éditer le message Discord si ce trade en avait un ────────────────
+    if discord_message_id:
+        try:
+            from config import settings
+            from engine.notifications import edit_discord_message
+
+            if settings.DISCORD_WEBHOOK_URL:
+                # Recharger le trade avec l'outcome à jour (session fraîche)
+                async with AsyncSessionLocal() as session:
+                    result = await session.execute(
+                        select(Trade).where(Trade.id == trade_id)
+                    )
+                    trade_updated = result.scalar_one_or_none()
+
+                if trade_updated:
+                    await edit_discord_message(
+                        webhook_url=settings.DISCORD_WEBHOOK_URL,
+                        message_id=discord_message_id,
+                        trade=trade_updated,
+                        outcome=outcome,
+                    )
+        except Exception as exc:
+            # Ne jamais faire planter l'outcome checker à cause de Discord
+            logger.error(
+                f"Erreur édition Discord pour trade {trade_id} "
+                f"(msg_id={discord_message_id}): {exc}"
+            )
