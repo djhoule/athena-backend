@@ -29,8 +29,8 @@ class Settings(BaseSettings):
 
     # ── Scan Parameters ───────────────────────────────────────────────────────
     SCAN_INTERVAL_MINUTES: int = 15
-    MIN_SCORE_THRESHOLD: int = 74
-    MIN_CONFLUENCE: int = 3
+    MIN_SCORE_THRESHOLD: int = 90
+    MIN_CONFLUENCE: int = 5
     MAX_TRADES_OUTPUT: int = 10
     MIN_RISK_REWARD: float = 2.0
 
